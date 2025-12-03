@@ -1,0 +1,88 @@
+{
+  "test_scenarios": [
+    {
+      "id": 1,
+      "name": "Simple Aggregation",
+      "question": "2008 yilinda toplam satis nedir?",
+      "category": "aggregation",
+      "expected_tables": ["FactSales", "DimDate"]
+    },
+    {
+      "id": 2,
+      "name": "Top Products",
+      "question": "En cok satan 5 urun hangisi?",
+      "category": "ranking",
+      "expected_tables": ["FactSales", "DimProduct"]
+    },
+    {
+      "id": 3,
+      "name": "Store vs Online",
+      "question": "2007'de magaza vs online satis karsilastirmasi",
+      "category": "comparison",
+      "expected_tables": ["FactSales", "FactOnlineSales"]
+    },
+    {
+      "id": 4,
+      "name": "Monthly Trend",
+      "question": "2009 yili aylik satis trendi",
+      "category": "trend",
+      "expected_tables": ["FactSales", "DimDate"]
+    },
+    {
+      "id": 5,
+      "name": "Bottom Products",
+      "question": "En az satan 3 urun hangisi?",
+      "category": "ranking",
+      "expected_tables": ["FactSales", "DimProduct"]
+    },
+    {
+      "id": 6,
+      "name": "Category Analysis",
+      "question": "Kategori bazinda satis analizi",
+      "category": "aggregation",
+      "expected_tables": ["FactSales", "DimProductCategory"]
+    },
+    {
+      "id": 7,
+      "name": "Yearly Comparison",
+      "question": "2007 ve 2008 yil karsilastirmasi",
+      "category": "comparison",
+      "expected_tables": ["FactSales", "DimDate"]
+    },
+    {
+      "id": 8,
+      "name": "Store Performance",
+      "question": "En iyi performans gosteren 5 magaza",
+      "category": "ranking",
+      "expected_tables": ["FactSales", "DimStore"]
+    },
+    {
+      "id": 9,
+      "name": "Product Details",
+      "question": "En cok satan urunun detayli bilgileri",
+      "category": "aggregation",
+      "expected_tables": ["FactSales", "DimProduct"]
+    },
+    {
+      "id": 10,
+      "name": "Quarterly Trend",
+      "question": "2008 ceyreklik satis trendi",
+      "category": "trend",
+      "expected_tables": ["FactSales", "DimDate"]
+    },
+    {
+      "id": 11,
+      "name": "Complex Multi-table",
+      "question": "Her kategoride en cok satan urun hangisi?",
+      "category": "complex",
+      "expected_tables": ["FactSales", "DimProduct", "DimProductCategory"]
+    },
+    {
+      "id": 12,
+      "name": "Geography Analysis",
+      "question": "Bolge bazinda satis performansi",
+      "category": "aggregation",
+      "expected_tables": ["FactSales", "DimStore", "DimGeography"]
+    }
+  ]
+}

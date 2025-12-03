@@ -1,0 +1,96 @@
+{
+  "summary": {
+    "total": 12,
+    "passed": 6,
+    "failed": 6,
+    "errors": 0,
+    "success_rate": 50.0,
+    "avg_time": 1040.376430074374
+  },
+  "results": [
+    {
+      "id": 1,
+      "name": "Simple Aggregation",
+      "status": "PASSED",
+      "rows": 1,
+      "time": 295.0225703716278
+    },
+    {
+      "id": 2,
+      "name": "Top Products",
+      "status": "FAILED",
+      "error": "('42S22', '[42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name \\'TotalSales_Store\\'. (207) (SQLExecDirectW); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name \\'TotalSales_Online\\'. (207); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Column \\'DimProduct.ProductName\\' is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause. (8120); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]The multi-part identifier \"fos.SalesAmount\" could not be bound. (4104); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]ORDER BY items must appear in the select list if the statement contains a UNION, INTERSECT or EXCEPT operator. (104)')",
+      "time": 311.595552444458
+    },
+    {
+      "id": 3,
+      "name": "Store vs Online",
+      "status": "PASSED",
+      "rows": 2,
+      "time": 364.1375472545624
+    },
+    {
+      "id": 4,
+      "name": "Monthly Trend",
+      "status": "PASSED",
+      "rows": 12,
+      "time": 314.5700716972351
+    },
+    {
+      "id": 5,
+      "name": "Bottom Products",
+      "status": "FAILED",
+      "error": "('42S22', '[42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name \\'TotalSales_Store\\'. (207) (SQLExecDirectW); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name \\'TotalSales_Store\\'. (207); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name \\'TotalSales_Online\\'. (207); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name \\'TotalSales_Online\\'. (207); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Column \\'DimProduct.ProductName\\' is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause. (8120); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]The multi-part identifier \"fos.SalesAmount\" could not be bound. (4104); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]ORDER BY items must appear in the select list if the statement contains a UNION, INTERSECT or EXCEPT operator. (104)')",
+      "time": 319.9724266529083
+    },
+    {
+      "id": 6,
+      "name": "Category Analysis",
+      "status": "FAILED",
+      "error": "('42S22', \"[42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name 'ProductCategoryKey'. (207) (SQLExecDirectW)\")",
+      "time": 358.54458355903625
+    },
+    {
+      "id": 7,
+      "name": "Yearly Comparison",
+      "status": "FAILED",
+      "error": "('42000', '[42000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]The multi-part identifier \"fs.SalesAmount\" could not be bound. (4104) (SQLExecDirectW); [42000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]The multi-part identifier \"fs.ReturnQuantity\" could not be bound. (4104); [42000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Ambiguous column name \\'Kanal\\'. (209)')",
+      "time": 307.84397053718567
+    },
+    {
+      "id": 8,
+      "name": "Store Performance",
+      "status": "PASSED",
+      "rows": 5,
+      "time": 359.46836018562317
+    },
+    {
+      "id": 9,
+      "name": "Product Details",
+      "status": "FAILED",
+      "error": "('42000', '[42000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Column \\'DimProduct.ProductName\\' is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause. (8120) (SQLExecDirectW); [42000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]The multi-part identifier \"fos.SalesAmount\" could not be bound. (4104); [42000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]ORDER BY items must appear in the select list if the statement contains a UNION, INTERSECT or EXCEPT operator. (104)')",
+      "time": 297.9743230342865
+    },
+    {
+      "id": 10,
+      "name": "Quarterly Trend",
+      "status": "PASSED",
+      "rows": 0,
+      "time": 218.3565924167633
+    },
+    {
+      "id": 11,
+      "name": "Complex Multi-table",
+      "status": "FAILED",
+      "error": "('42S22', '[42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name \\'ProductCategoryKey\\'. (207) (SQLExecDirectW); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name \\'ProductCategoryKey\\'. (207); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name \\'TotalSales_Store\\'. (207); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Invalid column name \\'TotalSales_Online\\'. (207); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]The multi-part identifier \"fos.SalesAmount\" could not be bound. (4104); [42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]ORDER BY items must appear in the select list if the statement contains a UNION, INTERSECT or EXCEPT operator. (104)')",
+      "time": 320.6539032459259
+    },
+    {
+      "id": 12,
+      "name": "Geography Analysis",
+      "status": "PASSED",
+      "rows": 36,
+      "time": 9016.377259492874
+    }
+  ]
+}
