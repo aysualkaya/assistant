@@ -1,4 +1,4 @@
-# 📘 Harmony AI – LLM Tabanlı Akıllı Analitik Asistanı
+# 📘 LLM Tabanlı Akıllı Analitik Asistanı
 
 **Contoso Retail Data Warehouse için Doğal Dil → SQL → İş Analitiği Dönüşümü**
 
