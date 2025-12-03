@@ -104,7 +104,7 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.image("https://via.placeholder.com/150x50/667eea/ffffff?text=Harmony+AI", use_column_width=True)
+        st.image("https://assets.zyrosite.com/cdn-cgi/image/format=auto,w=560,fit=crop,q=95/dWxbjG54J4FrOnry/harmony-logo-gradient-YBg4yWLpRriXjwvG.png", use_container_width=True)
         
         st.markdown("---")
         st.markdown("### 📊 Quick Stats")
