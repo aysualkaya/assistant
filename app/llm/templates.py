@@ -621,3 +621,88 @@ SELECT
 FROM OrderedRevenue
 ORDER BY TotalSales DESC
 """.strip()
+
+def template_top_online_products(limit: int = 5, year: int | None = None):
+    """
+    ONLINE kanalında en çok satan ürünler.
+    Örn: Online'da en çok satan 5 ürün hangisi?
+    """
+    sql = f"""
+SELECT TOP {limit}
+    dp.ProductName,
+    SUM(fos.SalesAmount) AS TotalSales
+FROM FactOnlineSales fos
+JOIN DimProduct dp ON fos.ProductKey = dp.ProductKey
+JOIN DimDate dd ON fos.DateKey = dd.DateKey
+"""
+    if year:
+        sql += f"WHERE dd.CalendarYear = {year}\n"
+    sql += """
+GROUP BY dp.ProductName
+ORDER BY TotalSales DESC
+"""
+    return sql.strip()
+
+def template_online_category_sales(year: int | None = None):
+    """
+    ONLINE kanalında kategori bazında satış analizi.
+    """
+    sql = """
+SELECT
+    dpc.ProductCategoryName,
+    SUM(fos.SalesAmount) AS TotalSales
+FROM FactOnlineSales fos
+JOIN DimProduct dp ON fos.ProductKey = dp.ProductKey
+JOIN DimProductSubcategory dps ON dp.ProductSubcategoryKey = dps.ProductSubcategoryKey
+JOIN DimProductCategory dpc ON dps.ProductCategoryKey = dpc.ProductCategoryKey
+JOIN DimDate dd ON fos.DateKey = dd.DateKey
+"""
+    if year:
+        sql += f"WHERE dd.CalendarYear = {year}\n"
+    sql += """
+GROUP BY dpc.ProductCategoryName
+ORDER BY TotalSales DESC
+"""
+    return sql.strip()
+
+def template_top_online_products_in_category(category_name: str, limit: int = 5, year: int | None = None):
+    """
+    ONLINE kanalında belirli bir kategoride en çok satan ürünler.
+    """
+    cat = _escape_literal(category_name)
+    sql = f"""
+SELECT TOP {limit}
+    dp.ProductName,
+    dpc.ProductCategoryName,
+    SUM(fos.SalesAmount) AS TotalSales
+FROM FactOnlineSales fos
+JOIN DimProduct dp ON fos.ProductKey = dp.ProductKey
+JOIN DimProductSubcategory dps ON dp.ProductSubcategoryKey = dps.ProductSubcategoryKey
+JOIN DimProductCategory dpc ON dps.ProductCategoryKey = dpc.ProductCategoryKey
+JOIN DimDate dd ON fos.DateKey = dd.DateKey
+WHERE dpc.ProductCategoryName = '{cat}'
+"""
+    if year:
+        sql += f"  AND dd.CalendarYear = {year}\n"
+    sql += """
+GROUP BY dp.ProductName, dpc.ProductCategoryName
+ORDER BY TotalSales DESC
+"""
+    return sql.strip()
+
+def template_online_monthly_trend(year: int):
+    """
+    ONLINE kanalında aylık satış trendi.
+    """
+    return f"""
+SELECT
+    dd.CalendarMonthLabel AS Month,
+    SUM(fos.SalesAmount) AS TotalSales
+FROM FactOnlineSales fos
+JOIN DimDate dd ON fos.DateKey = dd.DateKey
+WHERE dd.CalendarYear = {year}
+GROUP BY dd.CalendarMonthLabel
+ORDER BY dd.CalendarMonthLabel
+""".strip()
+
+

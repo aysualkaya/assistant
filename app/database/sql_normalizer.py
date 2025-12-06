@@ -1,4 +1,4 @@
-# app/database/sql_normalizer.py - ADVANCED FUZZY TABLE MATCHING VERSION
+# app/database/sql_normalizer.py - FINAL PRODUCTION VERSION
 """
 SQL Normalizer with Intelligent Fuzzy Table Name Correction
 
@@ -6,9 +6,9 @@ FEATURES:
 - Dynamic table list from database (INFORMATION_SCHEMA)
 - Case-insensitive exact matching (factonlinesales → FactOnlineSales)
 - Fuzzy matching with Levenshtein + similarity ratio
-- Alias & schema (dbo.) koruma
-- Phantom column düzeltme
-- MSSQL uyumlu keyword normalizasyonu
+- Alias & schema (dbo.) preservation
+- Phantom column cleanup (SELECT bölümünde)
+- MSSQL keyword normalization
 """
 
 import re
@@ -40,6 +40,7 @@ class SQLNormalizer:
         }
 
         # Phantom columns (LLM'in uydurabileceği kolonlar)
+        # Bunları sadece SELECT kısmında SalesAmount'a eşleyeceğiz.
         self.phantom_columns = [
             "OnlineSales", "PhysicalSales", "StoreSales", "RetailSales",
             "ChannelSales", "WebSales", "TotalRevenue"
@@ -74,7 +75,7 @@ class SQLNormalizer:
         Main normalization pipeline
 
         Args:
-            sql: Raw SQL (LLM çıktısı)
+            sql: Raw SQL (LLM output)
 
         Returns:
             Cleaned & normalized SQL
@@ -99,7 +100,8 @@ class SQLNormalizer:
         sql = self._final_cleanup(sql)
 
         logger.info("🧼 SQL normalized successfully.")
-        logger.debug(f"Before:\n{original_sql}\n\nAfter:\n{sql}")
+        logger.debug(f"--- SQL BEFORE NORMALIZATION ---\n{original_sql}\n\n"
+                     f"--- SQL AFTER NORMALIZATION ---\n{sql}")
 
         return sql
 
@@ -124,17 +126,21 @@ class SQLNormalizer:
             # No valid tables loaded, skip fuzzy matching
             return sql
 
-        # FROM / JOIN [schema.]TableName [Alias]
-        table_pattern = r'\b(FROM|JOIN)\s+((?:\w+\.)?)(\w+)(\s+\w+)?'
+        # FROM / JOIN [schema.]TableName [AS] [Alias]
+        # Örnekler:
+        #   FROM dbo.FactSales fs
+        #   JOIN DimProduct dp
+        #   JOIN dbo.DimProduct AS dp
+        table_pattern = r'\b(FROM|JOIN)\s+((?:\w+\.)?)(\w+)(?:\s+AS\s+|\s+)?(\w+)?'
 
         def replace_table(match):
-            keyword = match.group(1)
+            keyword = match.group(1)     # FROM / JOIN
             schema = match.group(2) or ""   # e.g. "dbo."
-            table_name = match.group(3)
-            alias = match.group(4) or ""    # e.g. " fs"
+            table_name = match.group(3)     # raw table
+            alias = match.group(4) or ""    # e.g. "fs" / "dp" / "fos"
 
-            # Alias kısa ise (fs, f, d), zaten ayrı yakalanıyor; dokunmuyoruz.
-            # Tablonun sadece kendisini düzeltmek istiyoruz.
+            if alias:
+                alias = f" {alias}"  # leading space
 
             lc_name = table_name.lower()
 
@@ -251,10 +257,11 @@ class SQLNormalizer:
             # Çok bariz açıklama satırlarını at
             if re.search(r"[A-Za-z]{4,}\s*:", stripped) and not stripped.upper().startswith("SELECT"):
                 # Örn: "Explanation:", "Reasoning:", "Açıklama:"
-                continue
+                if not stripped.upper().startswith("WITH "):  # CTE name gibi durumları bozma
+                    continue
             if "reasoning" in stripped.lower():
                 continue
-            if stripped.lower().startswith("here is"):
+            if stripped.lower().startswith("here is") and "query" in stripped.lower():
                 continue
             if stripped.lower().startswith("below") and "query" in stripped.lower():
                 continue
@@ -270,11 +277,35 @@ class SQLNormalizer:
     # ------------------------------------------------------------------
     def _remove_phantom_columns(self, sql: str) -> str:
         """
-        Replace hallucinated column names with valid ones (SalesAmount)
+        Replace hallucinated column names with valid ones (SalesAmount),
+        but only in the SELECT kısmı. FROM/JOIN bölümlerine dokunmuyoruz.
         """
+
+        # SELECT ... FROM ... yapısını ayır
+        upper_sql = sql.upper()
+        from_match = upper_sql.find(" FROM ")
+
+        if from_match == -1:
+            # Çok basit / bozuk bir query ise tümünde uygula (eski davranış)
+            cleaned = sql
+            for col in self.phantom_columns:
+                pattern = re.compile(rf"\b{col}\b", re.IGNORECASE)
+                if pattern.search(cleaned):
+                    logger.info(f"🩹 Phantom column normalized (global): {col} → SalesAmount")
+                cleaned = pattern.sub("SalesAmount", cleaned)
+            return cleaned
+
+        select_part = sql[:from_match]
+        rest_part = sql[from_match:]
+
+        cleaned_select = select_part
         for col in self.phantom_columns:
-            sql = re.sub(rf"\b{col}\b", "SalesAmount", sql, flags=re.IGNORECASE)
-        return sql
+            pattern = re.compile(rf"\b{col}\b", re.IGNORECASE)
+            if pattern.search(cleaned_select):
+                logger.info(f"🩹 Phantom column normalized (SELECT): {col} → SalesAmount")
+            cleaned_select = pattern.sub("SalesAmount", cleaned_select)
+
+        return cleaned_select + rest_part
 
     # ------------------------------------------------------------------
     # ALIAS & SPACING
@@ -297,7 +328,7 @@ class SQLNormalizer:
         if limit_match:
             n = limit_match.group(1)
             # Sadece ilk SELECT'i TOP ile değiştir
-            sql = re.sub(r"SELECT", f"SELECT TOP {n}", sql, count=1, flags=re.IGNORECASE)
+            sql = re.sub(r"\bSELECT\b", f"SELECT TOP {n}", sql, count=1, flags=re.IGNORECASE)
             sql = re.sub(r"LIMIT\s+\d+", "", sql, flags=re.IGNORECASE)
         return sql
 

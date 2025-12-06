@@ -1,10 +1,15 @@
 # app/llm/prompt_manager.py
 """
-Prompt Manager for SQL Generation
+Unified Prompt Manager (2025)
 
-- Uses DynamicSchemaBuilder to send ONLY relevant Contoso tables/columns
-- Adds critical business rules & join hints to the prompt
-- Enforces output format: SQL first, then EXPLANATION:
+Works with:
+- Ollama (string prompt)
+- OpenAI responses API (system + user role separation done in client)
+
+Key features:
+- Stable SQL-only output format
+- Hybrid intent support
+- Schema-aware prompting
 """
 
 from typing import Dict, List, Optional
@@ -14,46 +19,32 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# ------------------------------------------------------------
-# CONSTANT: OUTPUT FORMAT (SQL FIRST, THEN EXPLANATION)
-# ------------------------------------------------------------
-OUTPUT_FORMAT_INSTRUCTION = """
-CRITICAL OUTPUT FORMAT (YOU MUST FOLLOW THIS EXACTLY):
+# ===============================================================
+# STRICT OUTPUT FORMAT (SQL → EXPLANATION)
+# ===============================================================
+OUTPUT_CONTRACT = """
+YOU MUST FOLLOW THIS OUTPUT FORMAT EXACTLY:
 
-1) First, output ONLY the final T-SQL query (no backticks, no markdown, no comments).
-2) Then, on a new line, start with: EXPLANATION:
-   and write a short explanation in natural language.
+1) Write ONLY the final SQL query as plain text. No backticks. No markdown. No comments.
+2) Then add a blank line.
+3) Then write: EXPLANATION:
+4) Then a short explanation in natural language.
 
-Example:
-
-SELECT
-    dd.CalendarYear,
-    SUM(fs.SalesAmount) AS TotalSales
-FROM FactSales fs
-INNER JOIN DimDate dd ON fs.DateKey = dd.DateKey
-WHERE dd.CalendarYear = 2008
-GROUP BY dd.CalendarYear
-ORDER BY dd.CalendarYear;
-
-EXPLANATION: This query returns total sales for 2008 by summing SalesAmount in FactSales joined with DimDate.
-
-Now produce ONLY ONE final SQL query followed by EXPLANATION: as shown.
+Never write anything before the SQL query.
+Never write markdown fences.
+Never write multiple SQL queries.
 """
 
 
 class PromptManager:
-    """
-    Builds LLM prompts for SQL generation & correction.
-    Integrates DynamicSchemaBuilder to provide REAL schema from ContosoRetailDW.
-    """
 
-    def __init__(self) -> None:
+    def __init__(self):
         self.schema_builder = DynamicSchemaBuilder()
         self.logger = get_logger(__name__)
 
-    # --------------------------------------------------------
-    # PUBLIC MAIN ENTRY
-    # --------------------------------------------------------
+    # =======================================================================
+    # PUBLIC FUNCTION — Build the unified prompt for the LLM
+    # =======================================================================
     def build_sql_prompt(
         self,
         question: str,
@@ -61,207 +52,149 @@ class PromptManager:
         strategy: str,
         examples: Optional[List[Dict]] = None,
         error_context: Optional[str] = None,
+        llm_mode: str = "ollama",   # NEW: "ollama" or "openai"
     ) -> str:
-        """
-        Build the full prompt for the LLM based on:
-        - user question
-        - inferred intent
-        - chosen strategy (direct / few_shot / chain_of_thought / correction)
-        - similar examples (for few_shot)
-        - error context (for correction)
-        """
 
         query_type = intent.get("query_type", "aggregation")
         complexity = intent.get("complexity", 5)
-        confidence = intent.get("confidence", 0.7)
+        confidence = intent.get("confidence", 0.5)
 
-        # 1) Infer which tables are likely needed, then build schema text
-        tables_needed = self._infer_tables(question, intent)
-        schema_context = self.schema_builder.build_schema_context(tables_needed)
+        # Infer which schema pieces to show
+        tables = self._infer_tables(question, intent)
 
-        # 2) High-level system role
-        header = f"""
-You are an expert BI developer working with the Microsoft ContosoRetailDW SQL Server data warehouse (star schema).
+        # Decide schema mode based on LLM
+        schema_mode = "openai" if llm_mode == "openai" else "ollama"
+        schema_context = self.schema_builder.build_schema_context(
+            tables_needed=tables,
+            mode=schema_mode,
+        )
 
-Your job:
-- Convert a business question into a SINGLE valid T-SQL query.
-- Use ONLY real tables and columns from the provided CONTOSO SCHEMA.
-- Strictly follow Contoso business rules and join patterns.
+        # ===================================================================
+        # SYSTEM-STYLE ROLE (SAFE FOR BOTH OLLAMA + OPENAI)
+        # ===================================================================
+        system_block = f"""
+You are a senior Business Intelligence engineer who writes perfect SQL Server (T-SQL) queries.
+Your goal is to convert user questions into a SINGLE SQL query.
 
-User question (in Turkish or English):
+Rules you MUST follow:
+- Use ONLY tables/columns shown in the schema context.
+- Use correct ContosoRetailDW join paths.
+- Use SELECT TOP N ... ORDER BY ... for ranking queries.
+- NEVER use LIMIT (SQL Server does not support it).
+- NEVER use functions directly on DateKey.
+- ALWAYS join DimDate and filter via CalendarYear / CalendarMonth.
+- Output format MUST follow the exact contract at the end.
+
+User question:
 "{question}"
 
 Detected intent:
 - Type: {query_type}
-- Complexity: {complexity}/10
-- Confidence: {confidence:.2f}
+- Complexity: {complexity}
+- Confidence: {confidence}
 
-IMPORTANT:
-- Database: SQL Server (T-SQL)
-- Use SELECT ... FROM ..., INNER JOIN, LEFT JOIN, etc.
-- Use SELECT TOP N ... ORDER BY ... instead of LIMIT.
-- NEVER use YEAR(DateKey) or similar functions directly on DateKey.
-- ALWAYS join DimDate and filter via dd.CalendarYear, dd.CalendarMonth, etc.
-
-Below is the relevant part of the Contoso schema and business rules:
+Relevant schema context:
 {schema_context}
-"""
+""".strip()
 
-        # 3) Strategy-specific part
+        # ===================================================================
+        # STRATEGY BLOCK
+        # ===================================================================
         if strategy == "direct":
-            body = self._build_direct_instructions()
-        elif strategy == "few_shot":
-            body = self._build_few_shot_instructions(examples)
-        elif strategy == "chain_of_thought":
-            body = self._build_chain_of_thought_instructions()
-        elif strategy == "correction":
-            body = self._build_correction_instructions(error_context)
-        else:
-            # Fallback to direct
-            body = self._build_direct_instructions()
+            strategy_block = self._direct_block()
 
-        # 4) Add output format contract
-        prompt = header + "\n" + body + "\n" + OUTPUT_FORMAT_INSTRUCTION + "\n"
+        elif strategy == "few_shot":
+            strategy_block = self._few_shot_block(examples)
+
+        elif strategy == "chain_of_thought":
+            strategy_block = self._cot_block()
+
+        elif strategy == "correction":
+            strategy_block = self._correction_block(error_context)
+
+        else:
+            strategy_block = self._direct_block()
+
+        # ===================================================================
+        # FULL PROMPT (safe for both LLMs)
+        # ===================================================================
+        prompt = (
+            system_block
+            + "\n\n"
+            + strategy_block
+            + "\n\n"
+            + OUTPUT_CONTRACT
+        )
+
         return prompt
 
-    # --------------------------------------------------------
-    # STRATEGY SUB-PROMPTS
-    # --------------------------------------------------------
-    def _build_direct_instructions(self) -> str:
+    # =======================================================================
+    # STRATEGY SUBPROMPTS
+    # =======================================================================
+    def _direct_block(self):
         return """
 STRATEGY: DIRECT SQL GENERATION
+Write a single, correct, clean, production-quality SQL query.
+""".strip()
 
-Generate a single, clean T-SQL query that answers the question.
-- Prefer simple, readable SQL.
-- Use correct joins based on the schema and rules.
-- Use GROUP BY whenever you select non-aggregated columns together with aggregates.
-- Use ORDER BY when returning rankings or top-N results.
-"""
-
-    def _build_few_shot_instructions(self, examples: Optional[List[Dict]]) -> str:
+    def _few_shot_block(self, examples: Optional[List[Dict]]):
         text = """
 STRATEGY: FEW-SHOT SQL GENERATION
-
-Generate a T-SQL query inspired by the style of previous successful queries.
-Re-use patterns like:
-- FactSales/FactOnlineSales + DimDate for time filtering
-- DimProduct + DimProductSubcategory + DimProductCategory for product/category analysis
-- DimStore / DimGeography for store and region analysis
-
-Previous successful examples (for STYLE ONLY, do NOT copy table/column names that don't exist in the schema):
-"""
+Use style patterns similar to previous correct queries.
+Do NOT copy irrelevant columns; follow schema strictly.
+""".strip()
 
         if examples:
-            for i, ex in enumerate(examples, start=1):
+            for ex in examples:
                 q = ex.get("question", "").strip()
-                sql = (ex.get("sql", "") or "").strip()
+                sql = ex.get("sql", "").strip()
                 if not q or not sql:
                     continue
-                text += f"""
-Example {i}:
-Q: {q}
-SQL:
-{sql}
-"""
-        else:
-            text += "\n(No previous examples found, just follow the schema and rules.)\n"
+                text += f"\n\nExample:\nQ: {q}\nSQL:\n{sql}"
 
         return text
 
-    def _build_chain_of_thought_instructions(self) -> str:
+    def _cot_block(self):
         return """
-STRATEGY: CHAIN-OF-THOUGHT (DEEP REASONING)
+STRATEGY: CHAIN-OF-THOUGHT (internal reasoning allowed)
+- Think step-by-step internally.
+- Final output MUST follow the SQL → EXPLANATION format.
+""".strip()
 
-You may think step-by-step INTERNALLY, but in the final answer you MUST:
-- Output ONLY the final SQL query
-- Then output EXPLANATION: on a new line
-
-When reasoning about the query:
-- Choose the correct fact table(s) based on the question (FactSales vs FactOnlineSales)
-- Join DimDate, DimProduct, DimCustomer, DimStore, DimGeography, etc. as needed
-- For comparisons (store vs online, 2007 vs 2008), use either:
-    • UNION ALL with matching column lists, OR
-    • a single query with conditional aggregation (preferred)
-- For top-N products or stores, use:
-    SELECT TOP N ... ORDER BY <metric> DESC
-"""
-
-    def _build_correction_instructions(self, error_context: Optional[str]) -> str:
-        base = """
+    def _correction_block(self, error_context: Optional[str]):
+        block = """
 STRATEGY: SQL CORRECTION
-
-You are given a previous SQL attempt and its validation errors.
-Your job is to FIX the SQL so that:
-- It uses only valid tables/columns from the schema
-- It respects Contoso business rules and join patterns
-- It is syntactically valid T-SQL for SQL Server
-- It correctly answers the original business question
-
-DO NOT explain the error in the SQL itself.
-"""
+Fix the SQL so that it becomes valid, correct, and schema-compliant.
+Replace the entire query with a new correct one.
+""".strip()
 
         if error_context:
-            base += f"""
+            block += f"\n\nPrevious attempt + validation errors:\n{error_context}"
 
-Here is the previous attempt and the validation feedback:
-{error_context}
+        return block
 
-Now generate a NEW corrected SQL query (do NOT just patch small pieces).
-"""
-        return base
-
-    # --------------------------------------------------------
-    # TABLE INFERENCE (WHICH TABLES TO SHOW TO LLM)
-    # --------------------------------------------------------
+    # =======================================================================
+    # TABLE INFERENCE
+    # =======================================================================
     def _infer_tables(self, question: str, intent: Dict) -> List[str]:
-        """
-        Heuristic: choose a small set of relevant tables to reduce LLM confusion.
-        """
+        q = question.lower()
+        tables = ["FactSales", "FactOnlineSales", "DimDate"]
 
-        q = (question or "").lower()
-        qtype = intent.get("query_type", "aggregation")
+        if any(k in q for k in ["ürün", "urun", "product", "kategori"]):
+            tables += ["DimProduct", "DimProductSubcategory", "DimProductCategory"]
 
-        # Always include the core facts & DimDate
-        tables: List[str] = [
-            "FactSales",
-            "FactOnlineSales",
-            "DimDate",
-        ]
+        if any(k in q for k in ["mağaza", "magaza", "store", "city", "region"]):
+            tables += ["DimStore", "DimGeography"]
 
-        # Product-related?
-        if any(k in q for k in ["ürün", "urun", "product", "kategori", "category", "subkategori", "subcategory"]):
-            tables += [
-                "DimProduct",
-                "DimProductSubcategory",
-                "DimProductCategory",
-            ]
+        if any(k in q for k in ["müşteri", "musteri", "customer"]):
+            tables += ["DimCustomer"]
 
-        # Store / geography related?
-        if any(k in q for k in ["mağaza", "magaza", "store", "bölge", "bolge", "region", "ülke", "ulke", "city"]):
-            tables += [
-                "DimStore",
-                "DimGeography",
-            ]
-
-        # Customer related?
-        if any(k in q for k in ["müşteri", "musteri", "customer", "online"]):
-            tables += [
-                "DimCustomer",
-                "DimGeography",
-            ]
-
-        # Time-series / trend questions (we already have DimDate, but ensure)
-        if qtype == "trend":
-            if "DimDate" not in tables:
-                tables.append("DimDate")
-
-        # Remove duplicates while preserving order
-        seen: set = set()
-        unique_tables: List[str] = []
+        # Deduplicate
+        seen = set()
+        unique = []
         for t in tables:
             if t not in seen:
-                unique_tables.append(t)
+                unique.append(t)
                 seen.add(t)
 
-        logger.info(f"🧠 SchemaBuilder will include tables: {unique_tables}")
-        return unique_tables
+        return unique
