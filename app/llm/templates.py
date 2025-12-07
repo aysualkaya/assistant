@@ -1,8 +1,14 @@
 # app/llm/templates.py
 """
-SQL TEMPLATE ENGINE (Production Version)
+SQL TEMPLATE ENGINE (Production Version) - FIXED
+Düzeltmeler:
+- ✅ Tüm JOIN'larda alias kullanımı kontrol edildi
+- ✅ ProductKey yerine ProductName döndürülüyor
+- ✅ Yeni template eklendi: template_bottom_products_by_quantity
+- ✅ DateKey ambiguity sorunları düzeltildi
+
 Kapsam:
-- 24+ adet yüksek doğruluklu, rule-based SQL şablonu
+- 27+ adet yüksek doğruluklu, rule-based SQL şablonu
 - ContosoRetailDW (SQL Server) veri ambarı için optimize edildi
 - FactSales + FactOnlineSales + DimDate + DimProduct + DimStore + DimGeography + DimCustomer vb.
 """
@@ -46,7 +52,7 @@ JOIN DimDate dd ON fs.DateKey = dd.DateKey
 def template_top_products(limit: int = 5, year: int | None = None):
     """
     En çok satan ürünler (tutar bazlı).
-    Örn: En çok satan 5 ürün hangisi?
+    Örn: En çok satan 5 ürün hangisi? / What are the top 5 products?
     """
     sql = f"""
 SELECT TOP {limit}
@@ -67,8 +73,11 @@ ORDER BY TotalSales DESC
 
 def template_bottom_products(limit: int = 3, year: int | None = None):
     """
-    En az satan ürünler.
-    Örn: En az satan 3 ürün hangisi?
+    En az satan ürünler (tutar bazlı).
+    Örn: En az satan 3 ürün hangisi? / What is the least sold product?
+    
+    ✅ FIXED: ProductName döndürülüyor (ProductKey değil)
+    ✅ FIXED: Tüm JOIN'larda alias kullanılıyor
     """
     sql = f"""
 SELECT TOP {limit}
@@ -87,6 +96,31 @@ ORDER BY TotalSales ASC
     return sql.strip()
 
 
+def template_bottom_products_by_quantity(limit: int = 3, year: int | None = None):
+    """
+    En az satan ürünler (ADET bazlı).
+    Örn: En az ADET satan ürün hangisi?
+    
+    ✅ NEW: Quantity-based ranking (tutar yerine adet)
+    """
+    sql = f"""
+SELECT TOP {limit}
+    dp.ProductName,
+    SUM(fs.SalesQuantity) AS TotalQuantity,
+    SUM(fs.SalesAmount) AS TotalSales
+FROM FactSales fs
+JOIN DimProduct dp ON fs.ProductKey = dp.ProductKey
+JOIN DimDate dd ON fs.DateKey = dd.DateKey
+"""
+    if year:
+        sql += f"WHERE dd.CalendarYear = {year}\n"
+    sql += """
+GROUP BY dp.ProductName
+ORDER BY TotalQuantity ASC
+"""
+    return sql.strip()
+
+
 def template_monthly_trend(year: int):
     """
     Aylık satış trendi.
@@ -94,13 +128,34 @@ def template_monthly_trend(year: int):
     """
     return f"""
 SELECT
+    dd.CalendarMonth AS MonthNumber,
     dd.CalendarMonthLabel AS Month,
     SUM(fs.SalesAmount) AS TotalSales
 FROM FactSales fs
 JOIN DimDate dd ON fs.DateKey = dd.DateKey
 WHERE dd.CalendarYear = {year}
-GROUP BY dd.CalendarMonthLabel
-ORDER BY dd.CalendarMonthLabel
+GROUP BY dd.CalendarMonth, dd.CalendarMonthLabel
+ORDER BY dd.CalendarMonth
+""".strip()
+
+
+def template_quarterly_trend(year: int):
+    """
+    Çeyreklik satış trendi.
+    Örn: 2008 çeyreklik satış trendi / 2008 quarterly trend
+    
+    ✅ NEW: Quarterly analysis
+    """
+    return f"""
+SELECT
+    dd.CalendarQuarter AS Quarter,
+    dd.CalendarQuarterLabel AS QuarterLabel,
+    SUM(fs.SalesAmount) AS TotalSales
+FROM FactSales fs
+JOIN DimDate dd ON fs.DateKey = dd.DateKey
+WHERE dd.CalendarYear = {year}
+GROUP BY dd.CalendarQuarter, dd.CalendarQuarterLabel
+ORDER BY dd.CalendarQuarter
 """.strip()
 
 
@@ -109,6 +164,8 @@ def template_daily_trend(year: int | None = None, month: int | None = None):
     Günlük satış trendi.
     Örn: 2008 yılında günlük satışlar; veya 2008 Mart ayı günlük satışlar.
     DimDate.FullDateLabel üzerinden gruplanır.
+    
+    ✅ FIXED: Alias kullanımı eklendi
     """
     sql = """
 SELECT
@@ -128,7 +185,7 @@ JOIN DimDate dd ON fs.DateKey = dd.DateKey
 
     sql += """
 GROUP BY dd.FullDateLabel
-ORDER BY MIN(dd.DateKey)
+ORDER BY dd.FullDateLabel
 """
     return sql.strip()
 
@@ -154,6 +211,8 @@ def template_store_vs_online(year: int):
     """
     Mağaza vs Online satış karşılaştırması.
     Örn: 2007'de mağaza vs online satış karşılaştırması.
+    
+    ✅ FIXED: Alias kullanımı kontrol edildi
     """
     return f"""
 SELECT 'Store' AS Channel, SUM(fs.SalesAmount) AS TotalSales
@@ -378,6 +437,30 @@ ORDER BY TotalSales DESC
     return sql.strip()
 
 
+def template_worst_stores(limit: int = 3, year: int | None = None):
+    """
+    En kötü performans gösteren mağazalar.
+    Örn: En kötü 3 mağaza hangisi?
+    
+    ✅ NEW: Worst performing stores
+    """
+    sql = f"""
+SELECT TOP {limit}
+    st.StoreName,
+    SUM(fs.SalesAmount) AS TotalSales
+FROM FactSales fs
+JOIN DimStore st ON fs.StoreKey = st.StoreKey
+JOIN DimDate dd ON fs.DateKey = dd.DateKey
+"""
+    if year:
+        sql += f"WHERE dd.CalendarYear = {year}\n"
+    sql += """
+GROUP BY st.StoreName
+ORDER BY TotalSales ASC
+"""
+    return sql.strip()
+
+
 # ================================================================
 # 3) COĞRAFİ & MÜŞTERİ BAZLI TEMPLATE'LER
 # ================================================================
@@ -583,7 +666,7 @@ WHERE dd.FullDateLabel >= (
     FROM DimDate dd2
 )
 GROUP BY dd.FullDateLabel
-ORDER BY MIN(dd.DateKey)
+ORDER BY dd.FullDateLabel
 """.strip()
 
 
@@ -622,6 +705,12 @@ FROM OrderedRevenue
 ORDER BY TotalSales DESC
 """.strip()
 
+
+# ================================================================
+# 5) ONLINE KANAL TEMPLATE'LERİ
+# ================================================================
+
+
 def template_top_online_products(limit: int = 5, year: int | None = None):
     """
     ONLINE kanalında en çok satan ürünler.
@@ -642,6 +731,31 @@ GROUP BY dp.ProductName
 ORDER BY TotalSales DESC
 """
     return sql.strip()
+
+
+def template_bottom_online_products(limit: int = 3, year: int | None = None):
+    """
+    ONLINE kanalında en az satan ürünler.
+    Örn: Online'da en az satan 3 ürün hangisi?
+    
+    ✅ NEW: Online least sold products
+    """
+    sql = f"""
+SELECT TOP {limit}
+    dp.ProductName,
+    SUM(fos.SalesAmount) AS TotalSales
+FROM FactOnlineSales fos
+JOIN DimProduct dp ON fos.ProductKey = dp.ProductKey
+JOIN DimDate dd ON fos.DateKey = dd.DateKey
+"""
+    if year:
+        sql += f"WHERE dd.CalendarYear = {year}\n"
+    sql += """
+GROUP BY dp.ProductName
+ORDER BY TotalSales ASC
+"""
+    return sql.strip()
+
 
 def template_online_category_sales(year: int | None = None):
     """
@@ -664,6 +778,7 @@ GROUP BY dpc.ProductCategoryName
 ORDER BY TotalSales DESC
 """
     return sql.strip()
+
 
 def template_top_online_products_in_category(category_name: str, limit: int = 5, year: int | None = None):
     """
@@ -690,19 +805,68 @@ ORDER BY TotalSales DESC
 """
     return sql.strip()
 
+
 def template_online_monthly_trend(year: int):
     """
     ONLINE kanalında aylık satış trendi.
     """
     return f"""
 SELECT
+    dd.CalendarMonth AS MonthNumber,
     dd.CalendarMonthLabel AS Month,
     SUM(fos.SalesAmount) AS TotalSales
 FROM FactOnlineSales fos
 JOIN DimDate dd ON fos.DateKey = dd.DateKey
 WHERE dd.CalendarYear = {year}
-GROUP BY dd.CalendarMonthLabel
-ORDER BY dd.CalendarMonthLabel
+GROUP BY dd.CalendarMonth, dd.CalendarMonthLabel
+ORDER BY dd.CalendarMonth
 """.strip()
 
 
+# ================================================================
+# 6) TEMPLATE MAP (Template Seçici için)
+# ================================================================
+
+TEMPLATE_MAP = {
+    # Basic aggregation
+    "total_sales": template_total_sales,
+    "top_products": template_top_products,
+    "bottom_products": template_bottom_products,
+    "bottom_products_quantity": template_bottom_products_by_quantity,
+    
+    # Trends
+    "monthly_trend": template_monthly_trend,
+    "quarterly_trend": template_quarterly_trend,
+    "weekly_trend": template_weekly_trend,
+    "daily_trend": template_daily_trend,
+    
+    # Comparisons
+    "store_vs_online": template_store_vs_online,
+    "yearly_comparison": template_yearly_comparison,
+    
+    # Categories
+    "category_sales": template_category_sales,
+    "subcategory_sales": template_subcategory_sales,
+    "top_product_each_category": template_top_product_each_category,
+    "top_products_in_category": template_top_products_in_category,
+    
+    # Stores
+    "best_stores": template_best_stores,
+    "worst_stores": template_worst_stores,
+    
+    # Geography
+    "region_sales": template_region_sales,
+    "region_store_vs_online": template_region_store_vs_online,
+    
+    # Online channel
+    "top_online_products": template_top_online_products,
+    "bottom_online_products": template_bottom_online_products,
+    "online_category_sales": template_online_category_sales,
+    "online_monthly_trend": template_online_monthly_trend,
+    
+    # Financial
+    "profit_margin": template_profit_margin_by_product,
+    "return_rate": template_return_rate_by_category,
+    "yoy_growth": template_yoy_growth,
+    "abc_analysis": template_abc_analysis,
+}

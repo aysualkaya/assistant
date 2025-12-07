@@ -10,6 +10,7 @@ Key features:
 - Stable SQL-only output format
 - Hybrid intent support
 - Schema-aware prompting
+- ORDER BY direction detection for accurate summarization
 """
 
 from typing import Dict, List, Optional
@@ -198,3 +199,123 @@ Replace the entire query with a new correct one.
                 seen.add(t)
 
         return unique
+
+    # =======================================================================
+    # RESULT SUMMARIZATION PROMPT
+    # =======================================================================
+    def _detect_order_direction(self, sql: str) -> str:
+        """
+        Detect ORDER BY direction in SQL to distinguish top vs bottom performers
+        
+        Args:
+            sql: SQL query string
+            
+        Returns:
+            'ASC', 'DESC', or 'UNKNOWN'
+        """
+        import re
+        
+        # Look for ORDER BY clause with explicit direction
+        order_match = re.search(r'ORDER\s+BY\s+\S+\s+(ASC|DESC)', sql, re.IGNORECASE)
+        if order_match:
+            return order_match.group(1).upper()
+        
+        # Check for ORDER BY without explicit direction (defaults to ASC in SQL Server)
+        if re.search(r'ORDER\s+BY', sql, re.IGNORECASE):
+            return 'ASC'  # SQL Server default
+        
+        return 'UNKNOWN'
+
+    def build_summary_prompt(
+        self,
+        question: str,
+        sql: str,
+        results: List[Dict],
+        intent: Optional[Dict] = None
+    ) -> str:
+        """
+        Build prompt for result summarization in Turkish
+        
+        Args:
+            question: User's original question
+            sql: Executed SQL query
+            results: Query results (first 10 rows)
+            intent: Intent classification result
+            
+        Returns:
+            Formatted prompt for LLM summarization
+        """
+        import json
+        
+        # Limit results to first 10 rows for prompt
+        results_json = json.dumps(results[:10], indent=2, ensure_ascii=False)
+        
+        # Build context hint based on query type
+        context_hint = ""
+        if intent:
+            query_type = intent.get('query_type', 'unknown')
+            
+            if query_type == "comparison":
+                context_hint = "\n📊 This is a COMPARISON query. Highlight differences and ratios."
+            
+            elif query_type == "ranking":
+                # 🚨 CRITICAL: Detect ORDER BY direction to distinguish top vs bottom
+                order_direction = self._detect_order_direction(sql)
+                
+                if order_direction == "ASC":
+                    context_hint = "\n🚨 CRITICAL: This is a RANKING query showing BOTTOM/LOWEST/WORST performers (ORDER BY ASC)."
+                    context_hint += "\n⚠️ The user asked for the LEAST/LOWEST/WORST, NOT the best/highest/top!"
+                    context_hint += "\n✅ Use Turkish words like: 'en az satan' (least selling), 'en düşük' (lowest), 'en kötü performans' (worst performance)"
+                    context_hint += "\n❌ DO NOT use: 'en çok satan' (top selling), 'en iyi' (best), 'lider' (leader)"
+                
+                elif order_direction == "DESC":
+                    context_hint = "\n📈 This is a RANKING query showing TOP/HIGHEST/BEST performers (ORDER BY DESC)."
+                    context_hint += "\n✅ Use Turkish words like: 'en çok satan' (top selling), 'en yüksek' (highest), 'en iyi' (best), 'lider' (leader)"
+                    context_hint += "\n❌ DO NOT use: 'en az satan' (least selling), 'en düşük' (lowest), 'en kötü' (worst)"
+                
+                else:
+                    context_hint = "\n📊 This is a RANKING query. Focus on the performers shown in results."
+            
+            elif query_type == "trend":
+                context_hint = "\n📈 This is a TREND query. Discuss patterns and changes over time."
+            
+            elif query_type == "aggregation":
+                context_hint = "\n🔢 This is an AGGREGATION query. Focus on the total/average/sum values."
+        
+        # Build the full prompt
+        prompt = f"""You are a senior business analyst presenting results to stakeholders in Turkish.
+
+USER QUESTION: "{question}"
+
+SQL EXECUTED:
+{sql}
+
+QUERY RESULTS (first 10 rows):
+{results_json}
+{context_hint}
+
+═══════════════════════════════════════════════════════════════════
+YOUR TASK: BUSINESS SUMMARY IN TURKISH
+═══════════════════════════════════════════════════════════════════
+
+Write a clear, professional summary in Turkish (max 150 words) covering:
+
+1. KEY FINDING: What is the main insight?
+2. NUMBERS: Present the most important metrics with exact values
+3. CONTEXT: What does this mean for the business?
+4. COMPARISON: If applicable, highlight differences or ratios
+5. ACTION: Any recommendations or notable observations
+
+STYLE GUIDELINES:
+- Professional but accessible Turkish
+- Focus on business impact
+- Use specific numbers from results
+- Keep it concise and actionable
+- Match the query intent (top vs bottom, comparison, trend)
+
+🚨 CRITICAL: Pay attention to the context hint above - use the correct Turkish vocabulary!
+
+Write the Turkish business summary now:
+"""
+        
+        return prompt
