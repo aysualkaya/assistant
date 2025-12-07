@@ -1,17 +1,16 @@
-# app/database/db_client.py - FINAL PRODUCTION VERSION (2025)
+# app/database/db_client.py - Clean Production Version (2025)
 """
-Database Client with Dynamic Schema Discovery + Execution Time Support
-- Returns: (rows, execution_time)
-- Fast connection (MARS + 3s timeout)
-- Full schema discovery
-- Safe Decimal → float conversion
+Database Client for Direct SQL Execution (pyodbc)
+- Fast, robust connection handling
+- Schema discovery for LLM + validator
+- Unified execute_sql interface for FastAPI
 """
 
 import pyodbc
 import decimal
-import json
 import time
 from typing import List, Dict, Any, Optional
+
 from app.utils.logger import get_logger
 from app.core.config import Config
 
@@ -19,61 +18,48 @@ logger = get_logger(__name__)
 
 
 # --------------------------------------------------------
-# JSON ENCODER FOR DECIMAL
+# DECIMAL → FLOAT CONVERTER
 # --------------------------------------------------------
-class DecimalEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, decimal.Decimal):
-            return float(obj)
-        return super().default(obj)
+def _convert_value(val):
+    if isinstance(val, decimal.Decimal):
+        return float(val)
+    return val
 
 
 # --------------------------------------------------------
 # DATABASE CLIENT
 # --------------------------------------------------------
 class DatabaseClient:
-    """
-    Full production SQL client
-    Supports:
-    ✔ Dynamic schema discovery
-    ✔ Fast stable connections
-    ✔ Accurate execution time reporting
-    """
 
-    def __init__(self, connection_string: Optional[str] = None):
-        base = connection_string or Config.get_db_connection_string()
+    def __init__(self):
+        self.conn_str = (
+            f"DRIVER={{{Config.DB_DRIVER}}};"
+            f"SERVER={Config.DB_SERVER};"
+            f"DATABASE={Config.DB_NAME};"
+            "Trusted_Connection=yes;"
+            "TrustServerCertificate=yes;"
+            "MARS_Connection=yes;"
+            "Connection Timeout=3;"
+        )
 
-        # Add MARS + timeout
-        extra = ";MARS_Connection=yes;Connection Timeout=3"
-
-        if not base.endswith(";"):
-            base += ";"
-
-        self.conn_str = base + extra
-
-        # Local caches
         self._tables_cache = None
         self._schema_cache = {}
 
-        logger.debug(
-            f"DatabaseClient initialized: server={Config.DB_SERVER}, db={Config.DB_NAME}"
-        )
+        logger.info(f"DatabaseClient initialized for server={Config.DB_SERVER}")
 
-    # --------------------------------------------------------
-    # FAST CONNECTION
-    # --------------------------------------------------------
+    # ----------------------------
+    # CONNECTION
+    # ----------------------------
     def get_connection(self):
-        """Open fast DB connection"""
         try:
-            logger.info(f"Connecting fast DB server={Config.DB_SERVER}, db={Config.DB_NAME}")
             return pyodbc.connect(self.conn_str, timeout=3)
         except Exception as e:
             logger.error(f"❌ DB connection failed: {e}")
-            raise e
+            raise
 
-    # --------------------------------------------------------
+    # ----------------------------
     # SCHEMA DISCOVERY
-    # --------------------------------------------------------
+    # ----------------------------
     def get_all_tables(self, refresh: bool = False) -> List[str]:
         if self._tables_cache and not refresh:
             return self._tables_cache
@@ -90,10 +76,8 @@ class DatabaseClient:
             """)
 
             tables = [row[0] for row in cursor.fetchall()]
-            tables = [t for t in tables if not t.startswith("sys")]
 
             self._tables_cache = tables
-            logger.info(f"📋 Found {len(tables)} tables")
 
             cursor.close()
             conn.close()
@@ -116,19 +100,18 @@ class DatabaseClient:
                 FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME=?
                 ORDER BY ORDINAL_POSITION
-            """, (table_name,))
+            """, table_name)
 
             columns = [
                 {
                     "name": row[0],
                     "type": row[1],
-                    "nullable": row[2] == "YES"
+                    "nullable": row[2] == "YES",
                 }
                 for row in cursor.fetchall()
             ]
 
             self._schema_cache[table_name] = columns
-            logger.debug(f"📋 Columns loaded: {table_name} ({len(columns)})")
 
             cursor.close()
             conn.close()
@@ -138,109 +121,56 @@ class DatabaseClient:
             logger.error(f"Failed to fetch schema for {table_name}: {e}")
             return []
 
-    def get_full_schema(self, tables=None):
-        if not tables:
-            tables = self.get_all_tables()
-        schema = {t: self.get_table_columns(t) for t in tables}
-        logger.info(f"📋 Full schema loaded for {len(schema)} tables")
-        return schema
-
-    def clear_schema_cache(self):
-        self._tables_cache = None
-        self._schema_cache = {}
-        logger.info("🗑️ Schema cache cleared")
-
-    # --------------------------------------------------------
-    # QUERY EXECUTION (UPDATED)
-    # --------------------------------------------------------
+    # ----------------------------
+    # SQL EXECUTION (low-level)
+    # ----------------------------
     def execute_query(self, query: str):
         """
-        Execute SQL with:
-        ✔ execution time
-        ✔ SELECT → list[dict]
-        ✔ Non-select → affected rows
-        Returns:
-            (rows, exec_time)
+        Low-level executor.
+        Returns (rows, exec_time)
         """
         conn = None
         cursor = None
         start = time.time()
 
         try:
-            logger.info(f"Executing SQL: {query[:120]}...")
             conn = self.get_connection()
             cursor = conn.cursor()
-
             cursor.execute(query)
 
             # SELECT
             if cursor.description:
-                columns = [col[0] for col in cursor.description]
-                rows_raw = cursor.fetchall()
-
+                cols = [c[0] for c in cursor.description]
                 rows = []
-                for row in rows_raw:
-                    item = {}
-                    for i, col in enumerate(columns):
-                        val = row[i]
-                        if isinstance(val, decimal.Decimal):
-                            val = float(val)
-                        item[col] = val
-                    rows.append(item)
+
+                for row in cursor.fetchall():
+                    rows.append({
+                        cols[i]: _convert_value(row[i])
+                        for i in range(len(cols))
+                    })
 
                 exec_time = time.time() - start
-                logger.info(f"Query returned {len(rows)} rows in {exec_time:.2f}s")
                 return rows, exec_time
 
-            # Non-select queries
+            # Non-select — UPDATE/INSERT/DELETE
             conn.commit()
-            affected = cursor.rowcount
             exec_time = time.time() - start
-
-            logger.info(f"Non-select query affected {affected} rows in {exec_time:.2f}s")
-            return [{"affected_rows": affected}], exec_time
+            return [{"affected_rows": cursor.rowcount}], exec_time
 
         except Exception as e:
             exec_time = time.time() - start
-            logger.error(f"❌ SQL error after {exec_time:.2f}s: {e}")
-            return {"error": str(e)}, exec_time
+            logger.error(f"❌ SQL execution error: {e}")
+            return [{"error": str(e)}], exec_time
 
         finally:
-            try:
-                if cursor:
-                    cursor.close()
-                if conn:
-                    conn.close()
-            except Exception as e:
-                logger.warning(f"Error closing DB connection: {e}")
-
-    # --------------------------------------------------------
-    # TEST CONNECTION
-    # --------------------------------------------------------
-    def test_connection(self):
-        try:
-            conn = self.get_connection()
-            conn.close()
-            logger.info("✅ DB connection test OK")
-            return True
-        except Exception as e:
-            logger.error(f"❌ DB connection test failed: {e}")
-            return False
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
 
 # --------------------------------------------------------
-# LEGACY HELPERS (STREAMLIT COMPATIBILITY)
-# --------------------------------------------------------
-def get_connection():
-    return DatabaseClient().get_connection()
-
-
-def execute_sql(query: str):
-    return DatabaseClient().execute_query(query)
-
-
-# --------------------------------------------------------
-# SINGLETON ACCESSOR
+# PUBLIC EXECUTE FUNCTION (API uses THIS)
 # --------------------------------------------------------
 _db_client = None
 
@@ -249,3 +179,13 @@ def get_db_client() -> DatabaseClient:
     if _db_client is None:
         _db_client = DatabaseClient()
     return _db_client
+
+
+def execute_sql(sql: str):
+    """
+    FastAPI expects ONLY the rows.
+    Execution time is tracked by API itself.
+    """
+    client = get_db_client()
+    rows, _ = client.execute_query(sql)
+    return rows

@@ -1,211 +1,277 @@
-# 📘 LLM Tabanlı Akıllı Analitik Asistanı
+LLM-Powered Intelligent Analytics Assistant 
+Natural Language → SQL → Business Insight Engine for ContosoRetailDW
 
-**Contoso Retail Data Warehouse için Doğal Dil → SQL → İş Analitiği Dönüşümü**
+This project implements a production-grade analytics assistant that can understand business questions (in English or Turkish), generate accurate SQL queries, execute them on the Microsoft ContosoRetailDW data warehouse, and summarize results as business insights.
+The system is optimized for correctness, reliability, and explainability—powered by LLMs, LangChain SQL tools, and a robust validation framework.
 
-Bu proje kapsamında, doğal dilde sorulan iş sorularının otomatik olarak SQL sorgularına dönüştürüldüğü, çalıştırıldığı ve sonuçların iş odaklı bir özet halinde sunulduğu bir akıllı analitik sistemi oluşturulmuştur. Sistem, LLM destekli bir mimari üzerine inşa edilmiştir ve Microsoft Contoso Retail veri ambarı üzerinde çalışacak şekilde tasarlanmıştır.
+1. Project Purpose
 
----
+The goal of this assistant is to automate the complete analytical workflow:
 
-## 📌 1. Proje Amacı
+Understand natural-language questions
 
-Projenin amacı, kullanıcıdan gelen doğal dildeki iş sorularının:
+Classify intent & detect required tables
 
-1. **Anlaşılması**,
-2. **Uygun SQL sorgusuna dönüştürülmesi**,
-3. **Veritabanı üzerinde çalıştırılması**,
-4. **Sonuçların iş perspektifiyle yorumlanması**,
-5. **Gerekirse grafikle görselleştirilmesi**
+Generate high-quality SQL
 
-süreçlerini uçtan uca otomatikleştiren bir analitik asistanın oluşturulmasıdır.
+Validate & correct SQL before execution
 
----
+Execute the query on SQL Server
 
-## 🧠 2. Ana Özellikler
+Summarize results in business language (TR/EN)
 
-### ✔️ Doğal Dil → SQL Dönüşümü
+(Optional) Visualize insights in Streamlit
 
-* Soru niyeti (intent) otomatik olarak sınıflandırılmaktadır.
-* Gerekli tablolar, kolonlar ve ilişkiler dinamik olarak belirlenmektedir.
-* SQL sorguları LLM tarafından oluşturulmakta, temizlenmekte ve doğrulanmaktadır.
+This dramatically reduces friction between business users and complex data warehouse data models.
 
-### ✔️ Dinamik Şema Algılama
+ 2. Key Capabilities
+Natural Language → SQL Generation (Hybrid Engine)
 
-* Veritabanı şeması *INFORMATION_SCHEMA* üzerinden gerçek zamanlı okunmaktadır.
-* Yabancı anahtar ilişkileri çıkarılmakta ve modele bağlam (context) olarak sunulmaktadır.
+Supports both Turkish and English automatically.
 
-### ✔️ Template Engine
+Uses a layered architecture:
 
-* En sık karşılaşılan iş soruları için (toplam satış, en çok satan ürün vb.) güvenilir SQL şablonları kullanılmaktadır.
-* Hatalı SQL üretimini azaltmak amacıyla LLM öncesi kural tabanlı çözüm uygulanmaktadır.
+Template Engine → deterministic SQL for common questions
 
-### ✔️ SQL Normalizasyonu & Doğrulama
+Dynamic LLM Generator → flexible reasoning
 
-* Üretilen SQL sorguları otomatik normalizasyon sürecinden geçirilmektedir.
-* Eksik JOIN, yanlış kolon adı, ORDER BY hatası vb. durumlar otomatik olarak tespit edilmektedir.
+LangChain SQL Tools → schema-aware generation
 
-### ✔️ Self-Correction Pipeline
+Validator & Normalizer → safe SQL execution
 
-* Hatalı SQL tespit edildiğinde sistem, modeli otomatik olarak düzeltme moduna almaktadır.
-* Yeni SQL oluşturularak doğrulanmakta ve kullanıcıya yalnızca geçerli sürüm sunulmaktadır.
+Self-Correction Module → fixes invalid SQL
 
-### ✔️ Sonuç Analizi (Executive Summary)
+Intent Classification
 
-* SQL çalıştırıldıktan sonra LLM tarafından iş odaklı özet oluşturulmaktadır.
-* Yönetici seviyesinde yorum, trend, karşılaştırma ve çıkarımlar eklenmektedir.
+Each query is analyzed to determine:
 
-### ✔️ Web Arayüzü (Streamlit)
+Aggregation, ranking, comparison, trend, geography, financial…
 
-* Soru sorma, üretilen SQL’i görüntüleme, tablo gösterimi ve grafikler için modern bir arayüz sağlanmaktadır.
-* Sorgu geçmişi ve desen keşif modülü sunulmaktadır.
+Complexity level
 
----
+Required tables
 
-## 🏗️ 3. Sistem Mimarisi
+Expected shape of the SQL output
 
-Proje, aşağıdaki ana bileşenlerden oluşacak şekilde tasarlanmıştır:
+LangChain SQL Integration (2025)
 
-### 🔹 **1. Intent Classifier (Niyet Sınıflandırma Modülü)**
+New — Production-grade enhancement
 
-* Sorgunun türü belirlenmektedir: *aggregation, ranking, comparison, trend, anomaly detection…*
-* Sorgunun karmaşıklığı tahmin edilmektedir.
-* Kullanılması gereken tablolar çıkarılmaktadır.
+LangChain is used only where it matters most:
 
-### 🔹 **2. SQL Generator (LLM Pipeline + Template Engine)**
+Table discovery
+tables = list_tables()
 
-* Template Engine → En güvenilir hızlı üretim
-* LLM SQL Generator → Şablon bulunamazsa devreye giren esnek üretim
-* SQL Extractor → EXPLANATION kısımları ayrılmakta, sadece SQL alınmaktadır.
-* SQL Validator → Sorgu yürütülmeden önce kontrol yapılmaktadır.
+Schema extraction (columns, types, FK structure)
+schema = get_schema("FactSales")
 
-### 🔹 **3. Database Access Layer**
+SQL validation & correction
+checked = check_sql(sql)
 
-* Microsoft SQL Server / ContosoRetailDW bağlantısı yapılmaktadır.
-* Güvenli sorgu çalıştırma mekanizması uygulanmaktadır.
 
-### 🔹 **4. Summary Generator**
+This gives the LLM real schema awareness, preventing:
 
-* Yönetici özetleri (executive summary) üretmektedir.
-* Performans ve trend analizleri oluşturulmaktadır.
+Wrong table names
 
-### 🔹 **5. Web UI (Streamlit)**
+Wrong column names
 
-* Chat arayüzü
-* Sonuç görselleştirme
-* Sorgu geçmişi
-* Desen madenciliği (Pattern Miner)
+Bad JOINs
 
----
+Missing GROUP BY
 
-## 🗂️ 4. Proje Klasör Yapısı
+MSSQL syntax issues
 
-```
+This dramatically increases SQL correctness and stability.
+
+SQL Validation Pipeline
+
+Each generated SQL query goes through:
+
+SQL Normalizer
+
+Table usage checker
+
+LangChain SQL checker
+
+Custom QueryValidator
+
+Self-correction cycle
+
+Safe execution wrapper
+
+This prevents almost all invalid SQL before reaching the database.
+
+Executive-Level Summaries (TR/EN)
+
+The assistant produces natural-language business insights:
+
+Trends
+
+Drivers of performance
+
+Comparative analysis
+
+Forecast-style interpretation
+
+Language is automatically matched to user input:
+
+Ask in English → Answer in English
+
+Ask in Turkish → Answer in Turkish
+
+ Modern Streamlit UI
+
+Provides:
+
+Chat-like interface
+
+Generated SQL viewer
+
+Data table results
+
+Optional charts
+
+Query history
+
+3. System Architecture
+User Question (TR/EN)
+        ↓
+Intent Classifier
+        ↓
+Template Engine (if applicable)
+        ↓
+LangChain schema loader (tables + columns)
+        ↓
+LLM SQL Generator (Ollama → OpenAI fallback)
+        ↓
+SQL Normalizer + Validator + LangChain SQL Checker
+        ↓
+Safe Execution (pyodbc)
+        ↓
+Business Summary Generator (TR/EN)
+        ↓
+Streamlit Web UI
+
+4. LangChain Integration (NEW – 2025)
+
+This project integrates LangChain minimally but effectively:
+
+New Files Added
+File	Purpose
+app/database/langchain_db.py	Creates SQLDatabase object for MSSQL
+app/tools/sql_tools.py	list_tables(), get_schema(), check_sql()
+sql_generator.py (updated)	Uses schema in prompt + SQL correction
+LangChain is NOT used for:
+
+Agents
+Tool-chains
+ReAct loops
+Multi-step planners
+
+Instead, Harmony AI uses LangChain as a schema engine + SQL correctness engine, keeping the system fast and stable.
+
+5. Final Project Directory Structure (2025)
 ├── app
 │   ├── core
+│   │   ├── config.py
 │   │   ├── intent_classifier.py
 │   │   ├── schema_builder.py
 │   ├── llm
 │   │   ├── sql_generator.py
 │   │   ├── prompt_manager.py
+│   │   ├── result_summarizer.py
 │   │   ├── templates.py
 │   ├── database
 │   │   ├── db_client.py
-│   │   ├── query_validator.py
 │   │   ├── sql_normalizer.py
+│   │   ├── query_validator.py
+│   │   ├── langchain_db.py       ← NEW
+│   ├── tools
+│   │   ├── sql_tools.py          ← NEW
 │   ├── memory
 │   │   ├── query_logger.py
-│   │   ├── pattern_miner.py
+│   │   └── (PatternMiner removed)
 │   ├── utils
 │       ├── logger.py
 │
 ├── tests
 │   ├── run_test_scenarios.py
 │   ├── test_scenarios.json
+│   ├── sql_table_validator.py    ← NEW (2025)
 │
-├── poc_streamlit.py
 ├── poc_interactive.py
+├── poc_streamlit.py
 ├── README.md
-```
+├── requirements.txt
 
----
-
-## ⚙️ 5. Kurulum ve Çalıştırma
-
-### **1️⃣ Gerekli Paketler Kurulur**
-
-```bash
+6. Installation & Setup
+ 1- Install dependencies
 pip install -r requirements.txt
-```
 
-### **2️⃣ Ollama Modelinin Yüklenmesi**
-
-```bash
+ 2️- Pull Ollama models
 ollama pull llama3.1:8b
-```
+ollama pull llama3.2:latest
 
-### **3️⃣ Veritabanı Bağlantısı Ayarlanır**
+ 3️- Configure Database
 
-`config.py` içinde SQL Server bilgileri düzenlenmektedir.
+Edit app/core/config.py or .env:
 
-### **4️⃣ Web Arayüzünün Başlatılması**
+DB_SERVER=localhost
+DB_NAME=ContosoRetailDW
+DB_DRIVER="ODBC Driver 18 for SQL Server"
 
-```bash
+ 4️- Run the Streamlit UI
 streamlit run poc_streamlit.py
-```
 
-### **5️⃣ Terminal Üzerinden Soru Sorma**
+ 5️- Run Interactive Terminal Mode
+python poc_interactive.py
 
-```bash
-python -c "from app.llm.sql_generator import DynamicSQLGenerator; print(DynamicSQLGenerator().generate_sql('2008 yılında toplam satış nedir?'))"
-```
+7. Automated Test Suite
 
----
+Run:
 
-## 🧪 6. Test Senaryoları
-
-Testler `tests/run_test_scenarios.py` çalıştırılarak uygulanmaktadır:
-
-```bash
 python tests/run_test_scenarios.py
-```
 
-Testler şunları kapsamaktadır:
 
-* Doğru intent sınıflandırması
-* Template Engine doğruluğu
-* SQL üretimi ve doğrulama
-* Hatalı SQL düzeltme pipeline’ı
-* Sonuç özetleme tutarlılığı
+Each scenario validates:
 
----
+Correct intent
 
-## 📈 7. Örnek Sorgular
+Correct SQL
 
-Aşağıdaki sorular sistem tarafından başarıyla çalıştırılabilmektedir:
+Correct table usage (via LangChain schema)
 
-| Soru                                          | Açıklama                    |
-| --------------------------------------------- | --------------------------- |
-| “2008 yılında toplam satış nedir?”            | Aggregation                 |
-| “En çok satan 5 ürün hangisi?”                | Ranking                     |
-| “2007 mağaza vs online satış karşılaştırması” | Comparison                  |
-| “2009 aylık satış trendi”                     | Time-series                 |
-| “En az satan ürün hangisi?”                   | Ranking (template fallback) |
+No execution errors
 
----
+Logical structure
 
-## 🚀 8. Yol Haritası (Future Work)
+Quality of summaries
 
-| Özellik                       | Durum                  |
-| ----------------------------- | ---------------------- |
-| Gelişmiş grafik motoru        | Planlandı              |
-| GPT-4o Mini fallback          | Entegrasyon aşamasında |
-| Multi-agent SQL planner       | Planlanıyor            |
-| Fine-tuning (Contoso’ya özel) | Araştırma aşamasında   |
+Example test case:
 
----
+{
+  "id": 1,
+  "name": "Simple Aggregation",
+  "question": "2008 yılında toplam satış nedir?",
+  "expected_tables": ["FactSales", "DimDate"]
+}
 
-## 📝 9. Lisans
+8. Example Supported Questions (TR & EN)
+Example Question	Category
+“2008 yılında toplam satış nedir?”	Aggregation
+“What are the top 5 products?”	Ranking
+“2007 mağaza vs online satış karşılaştırması”	Comparison
+“Show the monthly trend for 2009”	Trend
+“En az satan ürün hangisi?”	Ranking
+“Which category performs best online?”	Category Analysis
+9. Future Enhancements
+Feature	Status
+Advanced analytics dashboards	Planned
+GPT-4o Mini fallback routing	In progress
+Multi-step SQL Planning Agent	Planned
+Contoso-specific fine-tuned model	Research phase
+Multi-language conversational UI	Planned
+10. License
 
-Bu proje araştırma ve geliştirme amaçlı oluşturulmuş olup ticari kullanım için uygun olmayabilir.
-
----
-
+This project is intended for research, education, and prototyping.
+Not recommended for production without further security, monitoring, and scalability enhancements.

@@ -4,20 +4,21 @@ OllamaClient - Final Production Version (2025)
 
 Supports:
 - SQL model (Config.OLLAMA_SQL_MODEL)
-- Summary model (Config.OLLAMA_SUMMARY_MODEL)
+- Summary/text model (Config.OLLAMA_SUMMARY_MODEL)
 - Streaming for SQL
 - Non-streaming for Summary
 - Retry + Timeout
-- Caching
-- Advanced SQL extraction
-- OpenAI fallback (for both SQL + Summary)
+- Simple in-memory caching
+- SQL-aware postprocessing
+- Optional OpenAI fallback (for both SQL + Summary)
+- LangChain LLM wrapper for QuerySQLCheckerTool
 """
 
 import json
 import time
 import re
 import hashlib
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Dict, Any
 
 import requests
 
@@ -33,6 +34,7 @@ class OllamaClient:
     High-level client used by:
     - DynamicSQLGenerator (generate_sql)
     - ResultSummarizer (generate_summary)
+    - LLMRouter (generate)
     """
 
     def __init__(
@@ -64,21 +66,45 @@ class OllamaClient:
 
         # OpenAI fallback
         self.enable_openai_fallback = Config.ENABLE_OPENAI_FALLBACK
-        self.openai_client = (
-            OpenAIClient() if self.enable_openai_fallback else None
-        )
+        self.openai_client = OpenAIClient() if self.enable_openai_fallback else None
 
-        # Cache for model-level results
+        # Simple in-memory cache
         self._cache: Dict[str, str] = {}
+        self.metrics: Dict[str, Any] = {"errors": 0}
 
         logger.info(
-            f"🤖 OllamaClient initialized "
+            "🤖 OllamaClient initialized "
             f"(sql_model={self.sql_model}, summary_model={self.summary_model}, "
             f"fallback={'ON' if self.enable_openai_fallback else 'OFF'})"
         )
 
     # ======================================================
-    # PUBLIC API
+    # PUBLIC API - GENERIC
+    # ======================================================
+    def generate(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        clean_sql: bool = False,
+        stream: bool = False,
+        stream_callback=None,
+    ) -> Optional[str]:
+        """
+        Generic text generation entry.
+        LLMRouter uses this.
+        """
+        chosen_model = model or self.summary_model
+
+        return self._generate(
+            model=chosen_model,
+            prompt=prompt,
+            stream=stream,
+            stream_callback=stream_callback,
+            clean_sql=clean_sql,
+        )
+
+    # ======================================================
+    # PUBLIC API - SQL
     # ======================================================
     def generate_sql(self, prompt: str, stream_callback=None) -> Optional[str]:
         """
@@ -86,7 +112,7 @@ class OllamaClient:
          1) Try Ollama (SQL model)
          2) If empty/failed → OpenAI fallback
         """
-        logger.info("🔍 Generating SQL using primary Ollama model...")
+        logger.info("🔍 Generating SQL using primary Ollama SQL model...")
 
         sql_text = self._generate(
             model=self.sql_model,
@@ -101,7 +127,7 @@ class OllamaClient:
 
         # OpenAI fallback
         if self.enable_openai_fallback and self.openai_client:
-            logger.warning("⚠️ Ollama SQL failed → switching to OpenAI fallback...")
+            logger.warning("⚠️ Ollama SQL failed → switching to OpenAI SQL fallback...")
             try:
                 fallback_sql = self.openai_client.generate_sql(prompt)
                 if fallback_sql:
@@ -113,24 +139,29 @@ class OllamaClient:
         logger.error("❌ SQL generation failed in both Ollama and OpenAI.")
         return None
 
-    def generate_summary(self, prompt: str, stream_callback=None) -> Optional[str]:
+    # ======================================================
+    # PUBLIC API - SUMMARY / TEXT
+    # ======================================================
+    def generate_summary(self, prompt: str) -> Optional[str]:
         """
         Summary generator:
-         1) Try Ollama small model
-         2) If empty/failed → OpenAI fallback
+         1) Try Ollama summary model
+         2) Fallback to OpenAI
         """
-        logger.info("📊 Generating summary using summary model...")
+        logger.info("📊 Generating summary using Ollama summary model...")
 
         summary = self._generate(
             model=self.summary_model,
             prompt=prompt,
             stream=False,
+            stream_callback=None,
             clean_sql=False,
         )
 
         if summary:
             return summary.strip()
 
+        # Summary fallback
         if self.enable_openai_fallback and self.openai_client:
             logger.warning("⚠️ Ollama summary failed → switching to OpenAI fallback...")
             try:
@@ -154,11 +185,14 @@ class OllamaClient:
         stream: bool = False,
         stream_callback=None,
         clean_sql: bool = False,
-    ):
-        self.metrics = getattr(self, "metrics", {"errors": 0})
+    ) -> Optional[str]:
+        """
+        Low-level HTTP wrapper for Ollama `/api/generate`.
+        Retry / caching / parse / cleanup handled here.
+        """
         cache_key = self._make_cache_key(model, prompt)
 
-        # Cache
+        # Cache hit
         if self.enable_cache and cache_key in self._cache:
             logger.info(f"💾 Cache hit (model={model})")
             return self._cache[cache_key]
@@ -183,7 +217,7 @@ class OllamaClient:
                     raw = self._parse_non_streaming(resp)
 
                 if not raw:
-                    logger.warning("⚠️ Ollama returned empty → retrying...")
+                    logger.warning("⚠️ Ollama returned empty response → retrying...")
                     continue
 
                 cleaned = self._postprocess(raw, clean_sql)
@@ -193,9 +227,7 @@ class OllamaClient:
                     return cleaned
 
             except Exception as e:
-                logger.error(
-                    f"❌ Ollama error on attempt {attempt}: {e}", exc_info=False
-                )
+                logger.error(f"❌ Ollama error on attempt {attempt}: {e}")
                 self.metrics["errors"] += 1
                 if attempt <= self.max_retries:
                     time.sleep(self.retry_delay)
@@ -205,28 +237,31 @@ class OllamaClient:
     # ======================================================
     # RESPONSE PARSING
     # ======================================================
-    def _parse_streaming_response(self, resp, stream_callback):
+    def _parse_streaming_response(self, resp, stream_callback=None) -> str:
         final = ""
         for line in resp.iter_lines():
             if not line:
                 continue
             try:
                 data = json.loads(line.decode("utf-8"))
-            except:
+            except Exception:
                 continue
 
             chunk = data.get("response") or data.get("text") or ""
             if chunk:
                 final += chunk
                 if stream_callback:
-                    stream_callback(chunk)
+                    try:
+                        stream_callback(chunk)
+                    except Exception as e:
+                        logger.warning(f"Stream callback error: {e}")
 
         return final.strip()
 
-    def _parse_non_streaming(self, resp):
+    def _parse_non_streaming(self, resp) -> str:
         try:
             data = resp.json()
-        except:
+        except Exception:
             return ""
         return (data.get("response") or data.get("text") or "").strip()
 
@@ -241,36 +276,60 @@ class OllamaClient:
         return text.strip()
 
     def _clean_sql(self, raw: str) -> str:
-        """Extracts real SQL from LLM output."""
+        """
+        Removes markdown fences and extracts valid SQL section.
+        """
         txt = raw.strip()
 
-        # Remove ```sql fences
-        txt = re.sub(r"```sql|```", "", txt, flags=re.IGNORECASE)
+        txt = re.sub(r"```sql", "", txt, flags=re.IGNORECASE)
+        txt = re.sub(r"```", "", txt)
 
-        # Keep only the part starting with SELECT/WITH/UPDATE/etc
         match = re.search(
-            r"(SELECT|WITH|INSERT|UPDATE|DELETE|CREATE)[\s\S]*", txt, re.IGNORECASE
+            r"(SELECT|WITH|INSERT|UPDATE|DELETE|CREATE)[\s\S]*",
+            txt,
+            re.IGNORECASE,
         )
         if match:
             txt = match.group(0)
 
-        # Remove GO
         txt = re.sub(r"\bGO\b", "", txt, flags=re.IGNORECASE)
-
         return txt.strip()
 
     # ======================================================
     # UTILITIES
     # ======================================================
-    def _make_cache_key(self, model, prompt):
-        return hashlib.md5(f"{model}||{prompt}".encode()).hexdigest()
+    def _make_cache_key(self, model: str, prompt: str) -> str:
+        return hashlib.md5(f"{model}||{prompt}".encode("utf-8")).hexdigest()
+
+    # ======================================================
+    # LANGCHAIN LLM WRAPPER (NEW)
+    # ======================================================
+    def as_langchain_llm(self):
+        """
+        Converts Ollama SQL model into a LangChain-compatible LLM.
+        Required for QuerySQLCheckerTool.
+        """
+        try:
+            from langchain_community.llms import Ollama
+
+            llm = Ollama(
+                base_url=self.base_url,
+                model=self.sql_model,
+                timeout=self.timeout,
+                temperature=0.0,
+            )
+            return llm
+
+        except Exception as e:
+            logger.error(f"❌ Failed to create LangChain Ollama LLM: {e}")
+            return None
 
 
 # Singleton helper
-_OLLAMA_SINGLETON = None
+_OLLAMA_SINGLETON: Optional[OllamaClient] = None
 
 
-def get_default_ollama_client():
+def get_default_ollama_client() -> OllamaClient:
     global _OLLAMA_SINGLETON
     if _OLLAMA_SINGLETON is None:
         _OLLAMA_SINGLETON = OllamaClient()

@@ -1,51 +1,53 @@
 # app/llm/prompt_manager.py
 """
-Unified Prompt Manager (2025)
-
-Works with:
-- Ollama (string prompt)
-- OpenAI responses API (system + user role separation done in client)
-
-Key features:
-- Stable SQL-only output format
-- Hybrid intent support
-- Schema-aware prompting
-- ORDER BY direction detection for accurate summarization
+Prompt Manager — 2025 Production Edition
+✔ Multilingual (TR + EN)
+✔ SQL-only output enforced
+✔ Schema-aware (OpenAI = compact, Ollama = detailed)
+✔ Direct / Few-shot / Correction strategies
+✔ ORDER BY direction detection
 """
 
 from typing import Dict, List, Optional
 from app.core.schema_builder import DynamicSchemaBuilder
 from app.utils.logger import get_logger
+import re
+import json
 
 logger = get_logger(__name__)
-
-
-# ===============================================================
-# STRICT OUTPUT FORMAT (SQL → EXPLANATION)
-# ===============================================================
-OUTPUT_CONTRACT = """
-YOU MUST FOLLOW THIS OUTPUT FORMAT EXACTLY:
-
-1) Write ONLY the final SQL query as plain text. No backticks. No markdown. No comments.
-2) Then add a blank line.
-3) Then write: EXPLANATION:
-4) Then a short explanation in natural language.
-
-Never write anything before the SQL query.
-Never write markdown fences.
-Never write multiple SQL queries.
-"""
 
 
 class PromptManager:
 
     def __init__(self):
         self.schema_builder = DynamicSchemaBuilder()
-        self.logger = get_logger(__name__)
 
-    # =======================================================================
-    # PUBLIC FUNCTION — Build the unified prompt for the LLM
-    # =======================================================================
+    # ============================================================
+    #  PUBLIC LANGUAGE DETECTION (required by ResultSummarizer)
+    # ============================================================
+    def detect_language(self, text: str) -> str:
+        """Public wrapper so summarizer can call it safely."""
+        return self._detect_language(text)
+
+    # ============================================================
+    #  INTERNAL LANGUAGE DETECTION (TR ↔ EN)
+    # ============================================================
+    def _detect_language(self, text: str) -> str:
+        if not text:
+            return "en"
+
+        t = text.lower()
+        tr_markers = [
+            "ş","ı","ğ","ü","ö","ç",
+            "hangi","neden","ürün","urun",
+            "mağaza","magaza","müşteri","musteri",
+            "satış","satis","ciro"
+        ]
+        return "tr" if any(m in t for m in tr_markers) else "en"
+
+    # ============================================================
+    #  MAIN SQL PROMPT BUILDER
+    # ============================================================
     def build_sql_prompt(
         self,
         question: str,
@@ -53,269 +55,173 @@ class PromptManager:
         strategy: str,
         examples: Optional[List[Dict]] = None,
         error_context: Optional[str] = None,
-        llm_mode: str = "ollama",   # NEW: "ollama" or "openai"
+        llm_mode: str = "ollama",
+        extra_schema: Optional[str] = None,
     ) -> str:
+
+        schema_mode = "openai" if llm_mode == "openai" else "ollama"
+        tables = self._infer_tables(question, intent)
+
+        schema_text = self.schema_builder.build_schema_context(
+            tables_needed=tables,
+            mode=schema_mode
+        )
+
+        if extra_schema:
+            schema_text += f"\n\n{extra_schema}"
+
+        lang = self.detect_language(question)
+
+        # SYSTEM BLOCK
+        if lang == "tr":
+            system_block = """
+Uzman bir SQL Server mühendisisin.
+Kullanıcı sorusunu TEK bir geçerli SQL sorgusuna dönüştür.
+
+KURALLAR:
+- Yalnızca şemada verilen tabloları ve kolonları kullan.
+- Tarih filtrelerinde mutlaka DimDate üzerinden CalendarYear/Month kullan.
+- DateKey üzerinde YEAR() kullanma.
+- LIMIT kullanma.
+- Sıralama sorularında SELECT TOP N + ORDER BY kullan.
+- ÇIKTI yalnızca SQL olacak.
+"""
+        else:
+            system_block = """
+You are an expert SQL Server engineer.
+Convert the user question into ONE valid SQL query.
+
+RULES:
+- Use ONLY the tables/columns shown in the schema.
+- Always join DimDate for year/month filtering.
+- Never use YEAR(DateKey).
+- Never use LIMIT (SQL Server does not support it).
+- Ranking queries must use SELECT TOP N … ORDER BY …
+- Output MUST contain ONLY SQL.
+"""
+
+        strategy_block = self._strategy_block(strategy, examples, error_context)
 
         query_type = intent.get("query_type", "aggregation")
         complexity = intent.get("complexity", 5)
-        confidence = intent.get("confidence", 0.5)
 
-        # Infer which schema pieces to show
-        tables = self._infer_tables(question, intent)
-
-        # Decide schema mode based on LLM
-        schema_mode = "openai" if llm_mode == "openai" else "ollama"
-        schema_context = self.schema_builder.build_schema_context(
-            tables_needed=tables,
-            mode=schema_mode,
-        )
-
-        # ===================================================================
-        # SYSTEM-STYLE ROLE (SAFE FOR BOTH OLLAMA + OPENAI)
-        # ===================================================================
-        system_block = f"""
-You are a senior Business Intelligence engineer who writes perfect SQL Server (T-SQL) queries.
-Your goal is to convert user questions into a SINGLE SQL query.
-
-Rules you MUST follow:
-- Use ONLY tables/columns shown in the schema context.
-- Use correct ContosoRetailDW join paths.
-- Use SELECT TOP N ... ORDER BY ... for ranking queries.
-- NEVER use LIMIT (SQL Server does not support it).
-- NEVER use functions directly on DateKey.
-- ALWAYS join DimDate and filter via CalendarYear / CalendarMonth.
-- Output format MUST follow the exact contract at the end.
-
-User question:
-"{question}"
-
-Detected intent:
-- Type: {query_type}
-- Complexity: {complexity}
-- Confidence: {confidence}
-
-Relevant schema context:
-{schema_context}
-""".strip()
-
-        # ===================================================================
-        # STRATEGY BLOCK
-        # ===================================================================
-        if strategy == "direct":
-            strategy_block = self._direct_block()
-
-        elif strategy == "few_shot":
-            strategy_block = self._few_shot_block(examples)
-
-        elif strategy == "chain_of_thought":
-            strategy_block = self._cot_block()
-
-        elif strategy == "correction":
-            strategy_block = self._correction_block(error_context)
-
-        else:
-            strategy_block = self._direct_block()
-
-        # ===================================================================
-        # FULL PROMPT (safe for both LLMs)
-        # ===================================================================
+        # FINAL PROMPT
         prompt = (
             system_block
+            + "\n\nUSER QUESTION:\n"
+            + question
+            + "\n\nINTENT:\n"
+            + f"- type: {query_type}\n- complexity: {complexity}\n\n"
+            + "SCHEMA CONTEXT:\n"
+            + schema_text
             + "\n\n"
             + strategy_block
-            + "\n\n"
-            + OUTPUT_CONTRACT
+            + "\n\nRETURN ONLY SQL."
         )
 
         return prompt
 
-    # =======================================================================
-    # STRATEGY SUBPROMPTS
-    # =======================================================================
-    def _direct_block(self):
-        return """
-STRATEGY: DIRECT SQL GENERATION
-Write a single, correct, clean, production-quality SQL query.
-""".strip()
+    # ============================================================
+    # STRATEGY DEFINITIONS
+    # ============================================================
+    def _strategy_block(self, strategy: str, examples, error_context):
+        if strategy == "direct":
+            return "STRATEGY: Generate a single final SQL query."
 
-    def _few_shot_block(self, examples: Optional[List[Dict]]):
-        text = """
-STRATEGY: FEW-SHOT SQL GENERATION
-Use style patterns similar to previous correct queries.
-Do NOT copy irrelevant columns; follow schema strictly.
-""".strip()
+        if strategy == "few_shot":
+            txt = "STRATEGY: Learn from examples. Follow their structure. Return ONLY SQL.\n"
+            if examples:
+                for ex in examples:
+                    if ex.get("sql"):
+                        txt += f"\nExample SQL:\n{ex['sql']}\n"
+            return txt
 
-        if examples:
-            for ex in examples:
-                q = ex.get("question", "").strip()
-                sql = ex.get("sql", "").strip()
-                if not q or not sql:
-                    continue
-                text += f"\n\nExample:\nQ: {q}\nSQL:\n{sql}"
+        if strategy == "correction":
+            return (
+                "STRATEGY: Correct the SQL. Replace it fully with a valid T-SQL query.\n\n"
+                f"ERROR CONTEXT:\n{error_context or ''}"
+            )
 
-        return text
+        return "STRATEGY: Generate a single final SQL query."
 
-    def _cot_block(self):
-        return """
-STRATEGY: CHAIN-OF-THOUGHT (internal reasoning allowed)
-- Think step-by-step internally.
-- Final output MUST follow the SQL → EXPLANATION format.
-""".strip()
-
-    def _correction_block(self, error_context: Optional[str]):
-        block = """
-STRATEGY: SQL CORRECTION
-Fix the SQL so that it becomes valid, correct, and schema-compliant.
-Replace the entire query with a new correct one.
-""".strip()
-
-        if error_context:
-            block += f"\n\nPrevious attempt + validation errors:\n{error_context}"
-
-        return block
-
-    # =======================================================================
+    # ============================================================
     # TABLE INFERENCE
-    # =======================================================================
+    # ============================================================
     def _infer_tables(self, question: str, intent: Dict) -> List[str]:
         q = question.lower()
-        tables = ["FactSales", "FactOnlineSales", "DimDate"]
+        tables = ["FactSales", "DimDate"]
 
-        if any(k in q for k in ["ürün", "urun", "product", "kategori"]):
-            tables += ["DimProduct", "DimProductSubcategory", "DimProductCategory"]
+        if any(k in q for k in ["online", "web", "internet"]):
+            tables.append("FactOnlineSales")
 
-        if any(k in q for k in ["mağaza", "magaza", "store", "city", "region"]):
-            tables += ["DimStore", "DimGeography"]
+        if any(k in q for k in ["ürün","urun","product","kategori"]):
+            tables += ["DimProduct","DimProductSubcategory","DimProductCategory"]
 
-        if any(k in q for k in ["müşteri", "musteri", "customer"]):
-            tables += ["DimCustomer"]
+        if any(k in q for k in ["mağaza","magaza","store"]):
+            tables.append("DimStore")
 
-        # Deduplicate
-        seen = set()
-        unique = []
-        for t in tables:
-            if t not in seen:
-                unique.append(t)
-                seen.add(t)
+        if any(k in q for k in ["müşteri","musteri","customer"]):
+            tables.append("DimCustomer")
 
-        return unique
+        return list(dict.fromkeys(tables))
 
-    # =======================================================================
-    # RESULT SUMMARIZATION PROMPT
-    # =======================================================================
+    # ============================================================
+    # ORDER BY DIRECTION DETECTION
+    # ============================================================
     def _detect_order_direction(self, sql: str) -> str:
-        """
-        Detect ORDER BY direction in SQL to distinguish top vs bottom performers
-        
-        Args:
-            sql: SQL query string
-            
-        Returns:
-            'ASC', 'DESC', or 'UNKNOWN'
-        """
-        import re
-        
-        # Look for ORDER BY clause with explicit direction
-        order_match = re.search(r'ORDER\s+BY\s+\S+\s+(ASC|DESC)', sql, re.IGNORECASE)
-        if order_match:
-            return order_match.group(1).upper()
-        
-        # Check for ORDER BY without explicit direction (defaults to ASC in SQL Server)
-        if re.search(r'ORDER\s+BY', sql, re.IGNORECASE):
-            return 'ASC'  # SQL Server default
-        
-        return 'UNKNOWN'
+        m = re.search(r"ORDER\s+BY\s+\S+\s+(ASC|DESC)", sql, re.IGNORECASE)
+        if m:
+            return m.group(1).upper()
+        if "ORDER BY" in sql.upper():
+            return "ASC"
+        return "UNKNOWN"
 
-    def build_summary_prompt(
-        self,
-        question: str,
-        sql: str,
-        results: List[Dict],
-        intent: Optional[Dict] = None
-    ) -> str:
-        """
-        Build prompt for result summarization in Turkish
-        
-        Args:
-            question: User's original question
-            sql: Executed SQL query
-            results: Query results (first 10 rows)
-            intent: Intent classification result
-            
-        Returns:
-            Formatted prompt for LLM summarization
-        """
-        import json
-        
-        # Limit results to first 10 rows for prompt
+    # ============================================================
+    # SUMMARY PROMPT BUILDER
+    # ============================================================
+    def build_summary_prompt(self, question, sql, results, intent=None):
+
+        lang = self.detect_language(question)
         results_json = json.dumps(results[:10], indent=2, ensure_ascii=False)
-        
-        # Build context hint based on query type
-        context_hint = ""
-        if intent:
-            query_type = intent.get('query_type', 'unknown')
-            
-            if query_type == "comparison":
-                context_hint = "\n📊 This is a COMPARISON query. Highlight differences and ratios."
-            
-            elif query_type == "ranking":
-                # 🚨 CRITICAL: Detect ORDER BY direction to distinguish top vs bottom
-                order_direction = self._detect_order_direction(sql)
-                
-                if order_direction == "ASC":
-                    context_hint = "\n🚨 CRITICAL: This is a RANKING query showing BOTTOM/LOWEST/WORST performers (ORDER BY ASC)."
-                    context_hint += "\n⚠️ The user asked for the LEAST/LOWEST/WORST, NOT the best/highest/top!"
-                    context_hint += "\n✅ Use Turkish words like: 'en az satan' (least selling), 'en düşük' (lowest), 'en kötü performans' (worst performance)"
-                    context_hint += "\n❌ DO NOT use: 'en çok satan' (top selling), 'en iyi' (best), 'lider' (leader)"
-                
-                elif order_direction == "DESC":
-                    context_hint = "\n📈 This is a RANKING query showing TOP/HIGHEST/BEST performers (ORDER BY DESC)."
-                    context_hint += "\n✅ Use Turkish words like: 'en çok satan' (top selling), 'en yüksek' (highest), 'en iyi' (best), 'lider' (leader)"
-                    context_hint += "\n❌ DO NOT use: 'en az satan' (least selling), 'en düşük' (lowest), 'en kötü' (worst)"
-                
-                else:
-                    context_hint = "\n📊 This is a RANKING query. Focus on the performers shown in results."
-            
-            elif query_type == "trend":
-                context_hint = "\n📈 This is a TREND query. Discuss patterns and changes over time."
-            
-            elif query_type == "aggregation":
-                context_hint = "\n🔢 This is an AGGREGATION query. Focus on the total/average/sum values."
-        
-        # Build the full prompt
-        prompt = f"""You are a senior business analyst presenting results to stakeholders in Turkish.
 
-USER QUESTION: "{question}"
+        ranking_note = ""
+        if intent and intent.get("query_type") == "ranking":
+            direction = self._detect_order_direction(sql)
+            if lang == "tr":
+                ranking_note = "(Bu liste EN DÜŞÜK değerleri gösteriyor.)" if direction == "ASC" else "(Bu liste EN YÜKSEK değerleri gösteriyor.)"
+            else:
+                ranking_note = "(This list shows LOWEST performers.)" if direction == "ASC" else "(This list shows TOP performers.)"
+
+        if lang == "tr":
+            instructions = """
+Türkçe profesyonel bir iş özeti yaz.
+- En fazla 150 kelime
+- Sayısal bulguları kullan
+- İş etkisini açıkla
+- Sıralama varsa doğru terimleri kullan
+"""
+        else:
+            instructions = """
+Write a professional business summary in English.
+- Max 150 words
+- Use numerical insights
+- Explain business impact
+- Use correct ranking terminology
+"""
+
+        return f"""
+USER QUESTION:
+{question}
 
 SQL EXECUTED:
 {sql}
 
-QUERY RESULTS (first 10 rows):
+RESULTS (first 10 rows):
 {results_json}
-{context_hint}
 
-═══════════════════════════════════════════════════════════════════
-YOUR TASK: BUSINESS SUMMARY IN TURKISH
-═══════════════════════════════════════════════════════════════════
+{ranking_note}
 
-Write a clear, professional summary in Turkish (max 150 words) covering:
+{instructions}
 
-1. KEY FINDING: What is the main insight?
-2. NUMBERS: Present the most important metrics with exact values
-3. CONTEXT: What does this mean for the business?
-4. COMPARISON: If applicable, highlight differences or ratios
-5. ACTION: Any recommendations or notable observations
-
-STYLE GUIDELINES:
-- Professional but accessible Turkish
-- Focus on business impact
-- Use specific numbers from results
-- Keep it concise and actionable
-- Match the query intent (top vs bottom, comparison, trend)
-
-🚨 CRITICAL: Pay attention to the context hint above - use the correct Turkish vocabulary!
-
-Write the Turkish business summary now:
+Write the summary now:
 """
-        
-        return prompt

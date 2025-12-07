@@ -1,21 +1,14 @@
-# app/database/query_validator.py
 """
-Advanced SQL Query Validator - PRODUCTION VERSION (2025)
-Fully compatible with:
-- DynamicSchemaBuilder
-- SQLNormalizer fuzzy correction
-- OpenAI / Ollama hybrid SQL generation
+Advanced SQL Query Validator (2025 – Final Production Version)
 
-Validator focuses ONLY on:
-- Business-rule correctness
-- Intent alignment
-- Critical SQL errors
-- Logical table/column misuse
-
-Does NOT duplicate:
-- Fuzzy table correction (SQLNormalizer handles it)
-- Phantom column cleanup (SQLNormalizer handles it)
-- Table existence logic (Normalizer ensures correct naming)
+Covers:
+✓ Business-rule correctness (DimDate, Fact tables)
+✓ Forbidden column misuse
+✓ Server-specific forbidden SQL functions (MySQL, PG, SQLite)
+✓ Intent alignment (ranking, trend, comparison)
+✓ Aggregation sanity checks
+✓ Ranking + TOP alignment
+✓ SQL injection pattern blocking
 """
 
 import re
@@ -26,183 +19,196 @@ logger = get_logger(__name__)
 
 
 class QueryValidator:
-    """
-    Lightweight but strict SQL validator.
-    Normalizer fixes structure — validator checks logic.
-    """
 
-    # Columns that FactSales must NOT contain
+    # Fact table forbidden columns
     FACTSALES_FORBIDDEN = ["CustomerKey"]
+    FACTONLINE_FORBIDDEN = ["ChannelKey", "StoreKey"]
 
-    # Columns that FactOnlineSales must NOT contain
-    FACTONLINE_FORBIDDEN = ["channelKey"]
+    # MySQL / PostgreSQL banned functions
+    FORBIDDEN_FUNCTIONS = {
+        r"LIMIT\s+\d+": "LIMIT is MySQL-specific. Use SELECT TOP in SQL Server.",
+        r"IFNULL\s*\(": "IFNULL() is MySQL-only. Use ISNULL().",
+        r"ILIKE\s": "ILIKE is PostgreSQL-only.",
+        r"REGEXP\s": "REGEXP is SQLite/MySQL. SQL Server uses LIKE or PATINDEX.",
+        r"NOW\s*\(": "NOW() is MySQL-only. Use GETDATE().",
+        r"CURDATE\s*\(": "CURDATE() is MySQL-only.",
+    }
+
+    # SQL Injection indicators
+    INJECTION_PATTERNS = [
+        r";\s*DROP\s+TABLE",
+        r";\s*ALTER\s+TABLE",
+        r";\s*TRUNCATE\s+TABLE",
+    ]
 
     def validate(self, sql: str, intent: Optional[Dict] = None) -> Tuple[bool, List[str]]:
         errors = []
 
+        # ------------------------------------
+        # 0. Empty query guard
+        # ------------------------------------
         if not sql or len(sql.strip()) < 10:
-            return False, ["ERROR: SQL query is empty or too short"]
+            return False, ["ERROR: SQL is empty or too short"]
 
-        # -------------------------------
-        # 1) Business-rule validations
-        # -------------------------------
-        errors.extend(self._check_date_filtering(sql))
-        errors.extend(self._check_factsales_column_misuse(sql))
-        errors.extend(self._check_factonlinesales_column_misuse(sql))
-        errors.extend(self._check_union_syntax(sql))
-        errors.extend(self._check_invalid_functions(sql))
+        # ------------------------------------
+        # 1. Business rules
+        # ------------------------------------
+        errors += self._check_dimdate_usage(sql)
+        errors += self._check_factsales_column_misuse(sql)
+        errors += self._check_factonlinesales_column_misuse(sql)
+        errors += self._check_forbidden_functions(sql)
+        errors += self._check_injection(sql)
+        errors += self._check_aggregation_groupby(sql)
 
-        # -------------------------------
-        # 2) Intent-based validation
-        # -------------------------------
+        # ------------------------------------
+        # 2. Intent alignment
+        # ------------------------------------
         if intent:
-            errors.extend(self._validate_against_intent(sql, intent))
+            errors += self._validate_intent_alignment(sql, intent)
 
-        # -------------------------------
-        # 3) Basic SQL structural rules
-        # -------------------------------
-        errors.extend(self._check_basic_syntax(sql))
+        # ------------------------------------
+        # 3. Structural sanity checks
+        # ------------------------------------
+        errors += self._sanity_check_structure(sql)
 
-        # -------------------------------
-        # FINAL RESULT
-        # -------------------------------
+        # Decision
         critical = [e for e in errors if e.startswith("ERROR")]
 
         if critical:
             logger.error("❌ SQL validation failed:")
-            for e in critical:
-                logger.error(f"  - {e}")
+            for c in critical:
+                logger.error("  - " + c)
             return False, errors
 
-        if errors:
-            for w in errors:
-                if w.startswith("WARNING"):
-                    logger.warning(f"⚠️ {w}")
+        # print warnings
+        for w in errors:
+            if w.startswith("WARNING"):
+                logger.warning("⚠️ " + w)
 
-        logger.info("✅ SQL validation passed")
         return True, errors
 
     # =====================================================================
-    # BUSINESS RULE CHECKS
+    # DIMDATE RULES
     # =====================================================================
+    def _check_dimdate_usage(self, sql: str) -> List[str]:
+        issues = []
 
-    def _check_date_filtering(self, sql: str) -> List[str]:
-        errors = []
-
-        # YEAR(DateKey) forbidden
-        if re.search(r'YEAR\s*\(\s*[\w\.]*DateKey\s*\)', sql, re.IGNORECASE):
-            errors.append(
-                "ERROR: YEAR(DateKey) cannot be used. "
-                "Join DimDate and filter with dd.CalendarYear."
+        # Warning for YEAR(DateKey)
+        if re.search(r"YEAR\s*\(\s*[\w\.]*DateKey\s*\)", sql, re.IGNORECASE):
+            issues.append(
+                "WARNING: YEAR(DateKey) used. Prefer joining DimDate and using CalendarYear."
             )
 
-        # Avoid GETDATE()
-        if "GETDATE()" in sql.upper():
-            errors.append(
-                "WARNING: GETDATE() is not recommended; data covers only years 2007–2009."
-            )
-
-        return errors
-
-    def _check_factsales_column_misuse(self, sql: str) -> List[str]:
-        """FactSales may NOT use CustomerKey."""
-        errors = []
-
-        if re.search(r'\bFactSales\b', sql, re.IGNORECASE):
-            if re.search(r'(FactSales|fs|f)\s*\.\s*CustomerKey', sql, re.IGNORECASE):
-                errors.append(
-                    "ERROR: FactSales does NOT contain CustomerKey. "
-                    "Use FactOnlineSales for CustomerKey."
+        # Check if CalendarYear / Month used without DimDate
+        if any(x in sql for x in ["CalendarYear", "CalendarMonth"]):
+            if "DimDate" not in sql:
+                issues.append(
+                    "ERROR: CalendarYear/CalendarMonth used without joining DimDate."
                 )
 
-        return errors
+        return issues
+
+    # =====================================================================
+    # FACT TABLE VALIDATION
+    # =====================================================================
+    def _check_factsales_column_misuse(self, sql: str) -> List[str]:
+        issues = []
+        if "FactSales" in sql or re.search(r"\bfs\b", sql):
+            for col in self.FACTSALES_FORBIDDEN:
+                if re.search(rf"(FactSales|fs)\s*\.\s*{col}", sql, re.IGNORECASE):
+                    issues.append(
+                        f"ERROR: FactSales does NOT contain {col}. Use FactOnlineSales."
+                    )
+        return issues
 
     def _check_factonlinesales_column_misuse(self, sql: str) -> List[str]:
-        """FactOnlineSales may NOT use channelKey."""
-        errors = []
-
-        if re.search(r'\bFactOnlineSales\b', sql, re.IGNORECASE):
-            if re.search(r'(FactOnlineSales|fos|fo)\s*\.\s*channelKey', sql, re.IGNORECASE):
-                errors.append(
-                    "ERROR: FactOnlineSales does NOT contain channelKey. "
-                    "Use FactSales for channelKey."
-                )
-
-        return errors
-
-    # =====================================================================
-    # SYNTAX CHECKS
-    # =====================================================================
-
-    def _check_union_syntax(self, sql: str) -> List[str]:
-        errors = []
-
-        if "UNION ALL" in sql.upper():
-            parts = re.split(r'UNION\s+ALL', sql, flags=re.IGNORECASE)
-            for p in parts[:-1]:
-                if "ORDER BY" in p.upper():
-                    errors.append(
-                        "WARNING: ORDER BY inside UNION ALL subqueries may require parentheses"
+        issues = []
+        if "FactOnlineSales" in sql or re.search(r"\bfos\b", sql):
+            for col in self.FACTONLINE_FORBIDDEN:
+                if re.search(rf"(FactOnlineSales|fos)\s*\.\s*{col}", sql, re.IGNORECASE):
+                    issues.append(
+                        f"ERROR: FactOnlineSales does NOT contain {col}. Use FactSales."
                     )
-        return errors
-
-    def _check_invalid_functions(self, sql: str) -> List[str]:
-        errors = []
-        invalid_patterns = {
-            r'DATE\(': "DATE() is a MySQL function. SQL Server uses CONVERT or CAST.",
-            r'CURDATE\(\)': "CURDATE() is MySQL-only.",
-            r'NOW\(\)': "NOW() is MySQL-only."
-        }
-
-        for pat, msg in invalid_patterns.items():
-            if re.search(pat, sql, re.IGNORECASE):
-                errors.append(f"WARNING: {msg}")
-
-        return errors
+        return issues
 
     # =====================================================================
-    # INTENT VALIDATION
+    # FORBIDDEN FUNCTION CHECKS
     # =====================================================================
+    def _check_forbidden_functions(self, sql: str) -> List[str]:
+        issues = []
+        for pattern, msg in self.FORBIDDEN_FUNCTIONS.items():
+            if re.search(pattern, sql, re.IGNORECASE):
+                issues.append(f"ERROR: {msg}")
+        return issues
 
-    def _validate_against_intent(self, sql: str, intent: Dict) -> List[str]:
-        errors = []
+    # =====================================================================
+    # SQL INJECTION
+    # =====================================================================
+    def _check_injection(self, sql: str) -> List[str]:
+        for p in self.INJECTION_PATTERNS:
+            if re.search(p, sql, re.IGNORECASE):
+                return ["ERROR: Suspicious SQL injection-like pattern detected"]
+        return []
+
+    # =====================================================================
+    # AGGREGATION CHECK
+    # =====================================================================
+    def _check_aggregation_groupby(self, sql: str) -> List[str]:
+        issues = []
+
+        is_agg = any(func in sql.upper() for func in ["SUM(", "COUNT(", "AVG("])
+
+        if is_agg and "GROUP BY" not in sql.upper():
+            # If no grouping but multiple non-aggregated columns exist
+            select_cols = re.findall(r"SELECT\s+(.*?)\s+FROM", sql, re.IGNORECASE | re.DOTALL)
+            if select_cols:
+                col_list = select_cols[0]
+                non_agg_cols = [
+                    c.strip()
+                    for c in col_list.split(",")
+                    if "(" not in c and "SUM" not in c and "COUNT" not in c
+                ]
+                if len(non_agg_cols) > 1:
+                    issues.append("WARNING: Aggregation used without GROUP BY may produce incorrect results")
+
+        return issues
+
+    # =====================================================================
+    # INTENT ALIGNMENT
+    # =====================================================================
+    def _validate_intent_alignment(self, sql: str, intent: Dict) -> List[str]:
+        issues = []
         qtype = intent.get("query_type")
 
+        # Ranking needs order by + top
         if qtype == "ranking":
             if "ORDER BY" not in sql.upper():
-                errors.append("WARNING: Ranking query should contain ORDER BY")
+                issues.append("WARNING: Ranking query expected ORDER BY clause")
+            if "TOP" not in sql.upper():
+                issues.append("WARNING: Ranking intent expected SELECT TOP")
 
-        if qtype == "comparison":
-            if intent.get("comparison_type") == "store_vs_online":
-                if "UNION ALL" not in sql.upper():
-                    errors.append("WARNING: Store vs online comparison should use UNION ALL")
+        # Trend needs GROUP BY
+        if qtype == "trend" and "GROUP BY" not in sql.upper():
+            issues.append("WARNING: Trend query expected GROUP BY")
 
-        if qtype == "trend":
-            if "GROUP BY" not in sql.upper():
-                errors.append("WARNING: Trend query should contain GROUP BY")
-
-        return errors
+        return issues
 
     # =====================================================================
-    # BASIC SQL SYNTAX
+    # STRUCTURAL CHECK
     # =====================================================================
-
-    def _check_basic_syntax(self, sql: str) -> List[str]:
-        errors = []
+    def _sanity_check_structure(self, sql: str) -> List[str]:
+        issues = []
 
         if "SELECT" not in sql.upper():
-            errors.append("ERROR: SQL must contain SELECT")
+            issues.append("ERROR: Missing SELECT keyword")
 
         if "FROM" not in sql.upper():
-            errors.append("ERROR: SQL must contain FROM")
+            issues.append("ERROR: Missing FROM clause")
 
-        # Parantez kontrolü
         if sql.count("(") != sql.count(")"):
-            errors.append(
-                "ERROR: Unbalanced parentheses detected"
-            )
+            issues.append("ERROR: Unbalanced parentheses detected")
 
-        return errors
+        return issues
 
 
 # Singleton

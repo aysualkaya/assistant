@@ -1,9 +1,15 @@
 # app/database/__init__.py
 """
-Database Package - Database Client, Query Validator
+Database Package
+----------------
+Provides:
+- get_db_client(): Singleton database client instance
+- DatabaseClient:  Direct class access (optional)
 """
 
-# Direct imports are safe here (no circular dependency)
-from app.database.db_client import DatabaseClient, execute_sql
+from app.database.db_client import DatabaseClient, get_db_client
 
-__all__ = ['DatabaseClient', 'execute_sql']
+__all__ = [
+    "DatabaseClient",
+    "get_db_client",
+]

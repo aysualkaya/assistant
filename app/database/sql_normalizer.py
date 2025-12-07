@@ -1,4 +1,4 @@
-# app/database/sql_normalizer.py - FINAL PRODUCTION VERSION
+# app/database/sql_normalizer.py - PRODUCTION REV 2025
 """
 SQL Normalizer with Intelligent Fuzzy Table Name Correction
 
@@ -8,12 +8,15 @@ FEATURES:
 - Fuzzy matching with Levenshtein + similarity ratio
 - Alias & schema (dbo.) preservation
 - Phantom column cleanup (SELECT bölümünde)
-- MSSQL keyword normalization
+- MSSQL keyword normalization (single + multi-word)
+- Basic LIMIT → TOP dönüşümü (MySQL → MSSQL)
+- Whitespace & markdown cleanup
 """
 
 import re
 import difflib
 from typing import List, Optional
+
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -22,6 +25,7 @@ logger = get_logger(__name__)
 class SQLNormalizer:
     """
     Production-grade SQL normalizer with fuzzy table correction
+    and Contoso + MSSQL-friendly cleanups.
     """
 
     def __init__(self, valid_tables: Optional[List[str]] = None):
@@ -34,10 +38,8 @@ class SQLNormalizer:
         """
         self.valid_tables: List[str] = valid_tables or []
 
-        # Lowercase → canonical name map (case-insensitive eşleşme için)
-        self._table_lc_map = {
-            t.lower(): t for t in self.valid_tables
-        }
+        # lowercase → canonical name map (case-insensitive exact match)
+        self._table_lc_map = {t.lower(): t for t in self.valid_tables}
 
         # Phantom columns (LLM'in uydurabileceği kolonlar)
         # Bunları sadece SELECT kısmında SalesAmount'a eşleyeceğiz.
@@ -46,26 +48,30 @@ class SQLNormalizer:
             "ChannelSales", "WebSales", "TotalRevenue"
         ]
 
-        # Valid MSSQL keywords (normalize edilecek)
+        # Valid MSSQL keywords (uppercase normalize edilecek)
         self.valid_keywords = [
             # Single-word
             "SELECT", "FROM", "WHERE", "GROUP", "BY", "ORDER", "INNER",
             "JOIN", "LEFT", "RIGHT", "FULL", "OUTER", "ON", "TOP",
             "HAVING", "UNION", "ALL", "EXISTS", "DISTINCT",
-            "CASE", "WHEN", "THEN", "END", "OVER", "PARTITION",
+            "CASE", "WHEN", "THEN", "ELSE", "END",
+            "OVER", "PARTITION", "ASC", "DESC",
+            "AND", "OR", "NOT", "IN", "LIKE", "BETWEEN", "IS", "NULL",
+            "INTO", "WITH", "APPLY", "CROSS", "OFFSET", "FETCH", "ROWS", "ROW", "NEXT",
 
             # Multi-word common patterns
             "GROUP BY", "ORDER BY", "INNER JOIN",
             "LEFT JOIN", "RIGHT JOIN", "FULL JOIN",
             "LEFT OUTER JOIN", "RIGHT OUTER JOIN", "FULL OUTER JOIN",
-            "PARTITION BY"
+            "CROSS JOIN", "OUTER APPLY", "CROSS APPLY",
+            "PARTITION BY", "FETCH NEXT", "ROW_NUMBER"
         ]
 
     # ------------------------------------------------------------------
     # PUBLIC API
     # ------------------------------------------------------------------
     def set_valid_tables(self, tables: List[str]):
-        """Update valid table list (from database)"""
+        """Update valid table list (from database)."""
         self.valid_tables = tables or []
         self._table_lc_map = {t.lower(): t for t in self.valid_tables}
         logger.info(f"📋 Normalizer loaded {len(self.valid_tables)} valid tables")
@@ -86,22 +92,41 @@ class SQLNormalizer:
         original_sql = sql
         sql = sql.strip()
 
+        # 1) Markdown & açıklama temizliği
         sql = self._remove_markdown(sql)
         sql = self._remove_explanations(sql)
         sql = self._strip_sql_prefix(sql)
+
+        # 2) Phantom kolonları SalesAmount'a map et
         sql = self._remove_phantom_columns(sql)
-        sql = self._fix_table_names_fuzzy(sql)   # ✅ fuzzy + case-insensitive
+
+        # 3) Tablo isimlerini fuzzy olarak düzelt
+        sql = self._fix_table_names_fuzzy(sql)
+
+        # 4) Alias & nokta spacing düzelt
         sql = self._fix_alias_spacing(sql)
-        sql = self._fix_limit(sql)
-        sql = self._fix_order_by(sql)
-        sql = self._fix_lowercase_keywords(sql)
+
+        # 5) LIMIT → TOP dönüşümü
+        sql = self._fix_limit_and_offset(sql)
+
+        # 6) ORDER BY / GROUP BY normalizasyonu
+        sql = self._fix_order_by_group_by(sql)
+
+        # 7) Keyword normalization (single + multi-word)
+        sql = self._fix_keywords(sql)
+
+        # 8) Fazla noktalı virgül ve parantez balansı
         sql = self._remove_trailing_semicolons(sql)
         sql = self._fix_unbalanced_parentheses(sql)
+
+        # 9) Son whitespace cleanup
         sql = self._final_cleanup(sql)
 
         logger.info("🧼 SQL normalized successfully.")
-        logger.debug(f"--- SQL BEFORE NORMALIZATION ---\n{original_sql}\n\n"
-                     f"--- SQL AFTER NORMALIZATION ---\n{sql}")
+        logger.debug(
+            f"--- SQL BEFORE NORMALIZATION ---\n{original_sql}\n\n"
+            f"--- SQL AFTER NORMALIZATION ---\n{sql}"
+        )
 
         return sql
 
@@ -126,21 +151,30 @@ class SQLNormalizer:
             # No valid tables loaded, skip fuzzy matching
             return sql
 
-        # FROM / JOIN [schema.]TableName [AS] [Alias]
-        # Örnekler:
+        # FROM / JOIN türleri:
         #   FROM dbo.FactSales fs
-        #   JOIN DimProduct dp
-        #   JOIN dbo.DimProduct AS dp
-        table_pattern = r'\b(FROM|JOIN)\s+((?:\w+\.)?)(\w+)(?:\s+AS\s+|\s+)?(\w+)?'
+        #   INNER JOIN DimProduct AS dp
+        #   LEFT OUTER JOIN dbo.DimStore s
+        join_keywords = (
+            r"FROM|JOIN|LEFT JOIN|RIGHT JOIN|INNER JOIN|FULL JOIN|"
+            r"LEFT OUTER JOIN|RIGHT OUTER JOIN|FULL OUTER JOIN|CROSS JOIN"
+        )
+
+        table_pattern = (
+            rf"\b({join_keywords})\s+"           # 1: join keyword
+            r"((?:\w+\.)?)"                      # 2: optional schema (e.g. dbo.)
+            r"(\w+)"                             # 3: table name
+            r"(?:\s+(?:AS\s+)?"                  # optional AS
+            r"([\[\]\w]+))?"                     # 4: optional alias (dp, [dp])
+        )
 
         def replace_table(match):
-            keyword = match.group(1)     # FROM / JOIN
+            keyword = match.group(1)        # FROM / LEFT JOIN / INNER JOIN ...
             schema = match.group(2) or ""   # e.g. "dbo."
             table_name = match.group(3)     # raw table
-            alias = match.group(4) or ""    # e.g. "fs" / "dp" / "fos"
+            alias = match.group(4) or ""    # e.g. dp / [dp]
 
-            if alias:
-                alias = f" {alias}"  # leading space
+            alias_part = f" {alias}" if alias else ""
 
             lc_name = table_name.lower()
 
@@ -149,14 +183,14 @@ class SQLNormalizer:
                 canonical = self._table_lc_map[lc_name]
                 if canonical != table_name:
                     logger.info(f"🔧 Canonical table normalization: {table_name} → {canonical}")
-                return f"{keyword} {schema}{canonical}{alias}"
+                return f"{keyword} {schema}{canonical}{alias_part}"
 
-            # 2) Fuzzy match (DimProdcut → DimProduct, FactONlineSales → FactOnlineSales ...)
+            # 2) Fuzzy match (DimProdcut → DimProduct, FactONlineSales → FactOnlineSales)
             corrected = self._fuzzy_match_table(table_name)
 
             if corrected and corrected != table_name:
                 logger.info(f"🔧 Fuzzy table correction: {table_name} → {corrected}")
-                return f"{keyword} {schema}{corrected}{alias}"
+                return f"{keyword} {schema}{corrected}{alias_part}"
 
             # 3) No change
             return match.group(0)
@@ -168,12 +202,6 @@ class SQLNormalizer:
         Find closest matching table name using:
         - Levenshtein distance
         - Similarity ratio (difflib.SequenceMatcher)
-
-        Arg:
-            table_name: Potentially incorrect table name
-
-        Returns:
-            Corrected table name or None if no safe match
         """
         if not self.valid_tables:
             return None
@@ -187,7 +215,7 @@ class SQLNormalizer:
         for valid in self.valid_tables:
             v_lower = valid.lower()
 
-            # Quick skip: çok alakasız uzunluktakileri at
+            # Çok alakasız uzunluktakileri at
             if abs(len(v_lower) - len(target)) > max(4, len(v_lower) // 2):
                 continue
 
@@ -215,9 +243,7 @@ class SQLNormalizer:
 
     @staticmethod
     def _levenshtein_distance(s1: str, s2: str) -> int:
-        """
-        Calculate Levenshtein distance between two strings
-        """
+        """Calculate Levenshtein distance between two strings."""
         if len(s1) < len(s2):
             return SQLNormalizer._levenshtein_distance(s2, s1)
 
@@ -238,7 +264,7 @@ class SQLNormalizer:
         return previous_row[-1]
 
     # ------------------------------------------------------------------
-    # MARKDOWN & COMMENTS
+    # MARKDOWN & EXPLANATIONS
     # ------------------------------------------------------------------
     def _remove_markdown(self, sql: str) -> str:
         sql = re.sub(r"```sql", "", sql, flags=re.IGNORECASE)
@@ -280,13 +306,11 @@ class SQLNormalizer:
         Replace hallucinated column names with valid ones (SalesAmount),
         but only in the SELECT kısmı. FROM/JOIN bölümlerine dokunmuyoruz.
         """
-
-        # SELECT ... FROM ... yapısını ayır
         upper_sql = sql.upper()
-        from_match = upper_sql.find(" FROM ")
+        from_index = upper_sql.find(" FROM ")
 
-        if from_match == -1:
-            # Çok basit / bozuk bir query ise tümünde uygula (eski davranış)
+        # FROM bulunamadıysa: çok basit / bozuk query, global uygula (legacy davranış)
+        if from_index == -1:
             cleaned = sql
             for col in self.phantom_columns:
                 pattern = re.compile(rf"\b{col}\b", re.IGNORECASE)
@@ -295,8 +319,8 @@ class SQLNormalizer:
                 cleaned = pattern.sub("SalesAmount", cleaned)
             return cleaned
 
-        select_part = sql[:from_match]
-        rest_part = sql[from_match:]
+        select_part = sql[:from_index]
+        rest_part = sql[from_index:]
 
         cleaned_select = select_part
         for col in self.phantom_columns:
@@ -318,32 +342,47 @@ class SQLNormalizer:
         return sql
 
     # ------------------------------------------------------------------
-    # LIMIT → TOP
+    # LIMIT / OFFSET → TOP
     # ------------------------------------------------------------------
-    def _fix_limit(self, sql: str) -> str:
+    def _fix_limit_and_offset(self, sql: str) -> str:
         """
-        Convert MySQL-style LIMIT to MSSQL TOP
+        Convert MySQL-style LIMIT to MSSQL TOP.
+        - LIMIT N           → SELECT TOP N ...
+        - LIMIT N OFFSET M  → SELECT TOP N ... (OFFSET dropped, warning logged)
         """
-        limit_match = re.search(r"LIMIT\s+(\d+)", sql, flags=re.IGNORECASE)
-        if limit_match:
-            n = limit_match.group(1)
-            # Sadece ilk SELECT'i TOP ile değiştir
-            sql = re.sub(r"\bSELECT\b", f"SELECT TOP {n}", sql, count=1, flags=re.IGNORECASE)
-            sql = re.sub(r"LIMIT\s+\d+", "", sql, flags=re.IGNORECASE)
+        pattern = re.compile(r"LIMIT\s+(\d+)(?:\s+OFFSET\s+(\d+))?", re.IGNORECASE)
+        match = pattern.search(sql)
+        if not match:
+            return sql
+
+        limit_val = match.group(1)
+        offset_val = match.group(2)
+
+        # İlk SELECT'i TOP ile değiştir
+        sql = re.sub(r"\bSELECT\b", f"SELECT TOP {limit_val}", sql, count=1, flags=re.IGNORECASE)
+
+        if offset_val:
+            logger.warning(
+                f"⚠️ LIMIT {limit_val} OFFSET {offset_val} detected. "
+                "OFFSET is ignored in MSSQL translation (no ORDER BY rewrite)."
+            )
+
+        # LIMIT kısmını kaldır
+        sql = pattern.sub("", sql)
         return sql
 
     # ------------------------------------------------------------------
     # ORDER BY / GROUP BY
     # ------------------------------------------------------------------
-    def _fix_order_by(self, sql: str) -> str:
+    def _fix_order_by_group_by(self, sql: str) -> str:
         sql = re.sub(r"order\s+by", "ORDER BY", sql, flags=re.IGNORECASE)
         sql = re.sub(r"group\s+by", "GROUP BY", sql, flags=re.IGNORECASE)
         return sql
 
     # ------------------------------------------------------------------
-    # UPPERCASE KEYWORDS
+    # KEYWORD NORMALIZATION
     # ------------------------------------------------------------------
-    def _fix_lowercase_keywords(self, sql: str) -> str:
+    def _fix_keywords(self, sql: str) -> str:
         """
         Normalize common SQL keywords to uppercase for readability
         and consistency.
@@ -387,9 +426,17 @@ class SQLNormalizer:
         return sql
 
     def _final_cleanup(self, sql: str) -> str:
-        sql = re.sub(r"\n{2,}", "\n", sql)
-        sql = sql.strip()
-        return sql
+        # Satır satır çalışıp aşırı whitespace'i sadeleştirelim
+        lines = []
+        for line in sql.splitlines():
+            # 3 ve üzeri boşlukları tek boşluğa indir
+            normalized = re.sub(r"[ \t]{3,}", " ", line)
+            lines.append(normalized.rstrip())
+        sql = "\n".join(lines)
+
+        # fazladan boş satırlar
+        sql = re.sub(r"\n{3,}", "\n\n", sql)
+        return sql.strip()
 
 
 # =====================================================================

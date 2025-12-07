@@ -1,13 +1,28 @@
+# app/llm/openai_client.py
+"""
+OpenAIClient - 2025 Production Version
+Compatible with:
+- DynamicSQLGenerator
+- LLMRouter
+- ResultSummarizer
+- Responses API (v2025)
+"""
+
 from openai import OpenAI
 from app.core.config import Config
 from app.utils.logger import get_logger
+import re
 
 logger = get_logger(__name__)
 
 
 class OpenAIClient:
     """
-    OpenAI Client (2025 Responses API)
+    Thin wrapper over OpenAI Responses API.
+    Provides:
+    - SQL generation (strict)
+    - General text generation
+    - Safe extraction
     """
 
     def __init__(self):
@@ -29,14 +44,16 @@ class OpenAIClient:
             logger.error(f"❌ Failed to initialize OpenAI client: {e}")
             self.enabled = False
 
-    # ==================================================================
-    # SQL GENERATION (STRICT)
-    # ==================================================================
+    # =====================================================
+    # SQL GENERATION
+    # =====================================================
     def generate_sql(self, prompt: str) -> str:
         if not self.enabled:
             return ""
 
         try:
+            logger.info("🧠 OpenAI SQL generation started...")
+
             response = self.client.responses.create(
                 model=self.model,
                 input=[
@@ -44,32 +61,34 @@ class OpenAIClient:
                         "role": "system",
                         "content": (
                             "You are an expert SQL generator.\n"
-                            "Rules:\n"
-                            "1. Return ONLY SQL code.\n"
-                            "2. Do NOT include explanations.\n"
-                            "3. Do NOT include comments.\n"
-                            "4. Output MUST start with SELECT or WITH.\n"
-                            "5. No markdown, no backticks, no prose.\n"
-                        )
+                            "STRICT RULES:\n"
+                            "1. Return ONLY SQL.\n"
+                            "2. No explanations.\n"
+                            "3. No comments.\n"
+                            "4. Must start with SELECT or WITH.\n"
+                            "5. No markdown or backticks.\n"
+                        ),
                     },
                     {
                         "role": "user",
                         "content": prompt
                     }
                 ],
-                max_output_tokens=800,
+                max_output_tokens=700,
             )
 
             raw = self._extract_text(response)
-            return raw.strip()
+            cleaned = self._clean_sql(raw)
+
+            return cleaned.strip()
 
         except Exception as e:
             logger.error(f"❌ OpenAI SQL generation failed: {e}")
             return ""
 
-    # ==================================================================
+    # =====================================================
     # GENERAL TEXT GENERATION
-    # ==================================================================
+    # =====================================================
     def generate(self, prompt: str) -> str:
         if not self.enabled:
             return ""
@@ -77,8 +96,8 @@ class OpenAIClient:
         try:
             response = self.client.responses.create(
                 model=self.model,
-                input=prompt,
-                max_output_tokens=1000,
+                input=[{"role": "user", "content": prompt}],
+                max_output_tokens=1200,
             )
 
             return self._extract_text(response).strip()
@@ -87,20 +106,56 @@ class OpenAIClient:
             logger.error(f"❌ OpenAI text generation failed: {e}")
             return ""
 
-    # ==================================================================
-    # INTERNAL SAFE EXTRACTION
-    # ==================================================================
+    # =====================================================
+    # SAFE EXTRACTION FOR RESPONSES API
+    # =====================================================
     def _extract_text(self, response) -> str:
+        """
+        Robust extractor for Responses API formats:
+        - response.output_text
+        - response.output[n].content
+        """
         try:
-            if hasattr(response, "output_text"):
+            # Format 1
+            if hasattr(response, "output_text") and response.output_text:
                 return response.output_text
 
+            # Format 2
             if hasattr(response, "output"):
-                for item in response.output:
-                    if "content" in item:
-                        return item["content"]
+                for part in response.output:
+                    if isinstance(part, dict) and "content" in part:
+                        return part["content"]
 
             return str(response)
 
         except Exception:
             return ""
+
+    # =====================================================
+    # SQL CLEANING
+    # =====================================================
+    def _clean_sql(self, text: str) -> str:
+        if not text:
+            return ""
+
+        sql = text.strip()
+
+        # Remove markdown ```
+        sql = re.sub(r"```sql|```", "", sql, flags=re.IGNORECASE)
+
+        # Remove explanations
+        lines = []
+        for line in sql.split("\n"):
+            if re.match(r"^[A-Za-z ]+:\s*$", line.strip()):
+                continue
+            if "explanation" in line.lower():
+                continue
+            lines.append(line)
+        sql = "\n".join(lines)
+
+        # Extract only actual SQL
+        match = re.search(r"(SELECT|WITH)[\s\S]*", sql, flags=re.IGNORECASE)
+        if match:
+            sql = match.group(0)
+
+        return sql.strip()

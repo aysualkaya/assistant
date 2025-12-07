@@ -1,10 +1,13 @@
 # app/llm/result_summarizer.py
 """
-Executive Business Summary Generator (2025)
-- Supports both English and Turkish summaries
-- ORDER BY direction detection for accurate ranking interpretation
-- Professional BI-style executive summaries
-SQL → Insight → Interpretation → Strategic Impact → Actions
+Executive Business Summary Generator (2025, Final Production Edition)
+
+Enhancements:
+✔ TR/EN full auto-detection (via PromptManager public API)
+✔ ORDER BY ASC/DESC direction included in both languages
+✔ OpenAI fallback for both TR + EN
+✔ Strong validation
+✔ More informative fallback summaries
 """
 
 from typing import Dict, List, Optional
@@ -18,41 +21,30 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# -------------------------------------------------------------------------
-# EXECUTIVE SUMMARY PROMPT (English - Legacy for backward compatibility)
-# -------------------------------------------------------------------------
-EXECUTIVE_SUMMARY_PROMPT_EN = """
-You are an AI Business Analyst generating an EXECUTIVE SUMMARY 
-for C-Level leaders (CEO, CFO, COO).
+# -------------------------------------------------------------------
+# Executive BI Prompt (English)
+# -------------------------------------------------------------------
+EXEC_SUMMARY_PROMPT_EN = """
+You are an AI Business Analyst generating a concise EXECUTIVE SUMMARY
+for senior business leaders.
 
 Your writing MUST be:
-- clear, fluent, and fully in English
-- concise and business-oriented
-- strictly based on the SQL results (do NOT invent numbers)
-- strategic and actionable
-
-Avoid:
-- technical descriptions (SQL, fields, joins, tables)
-- academic tone
-- redundant explanations
-- mixed languages
-- storytelling or fictional assumptions
+- fully in English
+- based ONLY on the query results
+- business-oriented
+- max 150 words
+- insightful and actionable
 
 STRUCTURE:
 1. Key Insight  
-   - State the main outcome directly.
-
 2. Business Interpretation  
-   - What does this tell us about performance, customers, profitability, or operations?
-
 3. Strategic Impact  
-   - How does this insight influence business decisions, growth, or competitive advantage?
+4. Recommended Actions
 
-4. Recommended Actions  
-   - Provide 2–4 realistic, high-impact actions executives can take.
-
-Your entire response must remain strictly within this structure 
-and must not make up any data beyond what is in the result preview.
+Do NOT:
+- mention SQL or technical details
+- invent numbers
+- speculate beyond the results
 """
 
 
@@ -61,88 +53,47 @@ class ResultSummarizer:
     def __init__(self):
         self.ollama = OllamaClient()
         self.openai = OpenAIClient()
-        self.prompt_manager = PromptManager()  # NEW: For Turkish summaries with ORDER BY detection
+        self.prompt_manager = PromptManager()
 
-    # ------------------------------------------------------------------
-    # Language Detection
-    # ------------------------------------------------------------------
-    def _detect_language(self, question: str) -> str:
-        """
-        Detect if question is in Turkish or English
-        
-        Args:
-            question: User's question
-            
-        Returns:
-            'tr' for Turkish, 'en' for English
-        """
-        # Turkish-specific characters and common words
-        turkish_indicators = [
-            'ü', 'ğ', 'ş', 'ı', 'ö', 'ç',  # Special characters
-            'nedir', 'hangisi', 'kaç', 'toplam', 'satış', 'ürün',  # Common words
-            'mağaza', 'müşteri', 'yıl', 'ay', 'karşılaştırma'
-        ]
-        
-        question_lower = question.lower()
-        
-        # Count Turkish indicators
-        turkish_count = sum(1 for indicator in turkish_indicators if indicator in question_lower)
-        
-        # If 2+ Turkish indicators found, assume Turkish
-        return 'tr' if turkish_count >= 2 else 'en'
-
-    # ------------------------------------------------------------------
-    # Summary validation
-    # ------------------------------------------------------------------
-    def _is_valid_summary(self, text: Optional[str]) -> bool:
+    # ---------------------------------------------------------------
+    # VALIDATION
+    # ---------------------------------------------------------------
+    def _is_valid(self, text: Optional[str]) -> bool:
         if not text:
             return False
-        clean = text.strip()
-        if len(clean) < 40:
+        t = text.strip()
+        if len(t) < 40:
             return False
-        if "error" in clean.lower():
+        if "error" in t.lower():
             return False
-        # Don't reject if "sql" appears in context (e.g., "SQL results show...")
         return True
 
-    # ------------------------------------------------------------------
-    # Fallback summary
-    # ------------------------------------------------------------------
-    def _fallback_summary(self, results: List[Dict], language: str = 'en') -> str:
-        """
-        Generate a simple fallback summary when LLM fails
-        
-        Args:
-            results: Query results
-            language: 'en' or 'tr'
-            
-        Returns:
-            Simple summary string
-        """
+    # ---------------------------------------------------------------
+    # FALLBACK SUMMARY (IMPROVED)
+    # ---------------------------------------------------------------
+    def _fallback(self, results: List[Dict], lang: str) -> str:
         sample = results[0] if results else {}
-        
-        if language == 'tr':
+
+        if lang == "tr":
             return f"""
 📊 İş Özeti (Yedek)
-
-Sistem tam özet oluşturamadı.  
-İlk satır verisi:
+Sistem detaylı bir özet üretemedi. 
+Aşağıda ilk veri satırı bulunmaktadır:
 
 {json.dumps(sample, indent=2, ensure_ascii=False)}
-"""
-        else:
-            return f"""
+""".strip()
+
+        return f"""
 📊 Executive Summary (Fallback)
-
-The system could not generate a full summary.  
-Here is a preview of the first row of data:
+The system could not produce a full summary.
+Below is the first data row for reference:
 
 {json.dumps(sample, indent=2, ensure_ascii=False)}
-"""
+""".strip()
 
-    # ------------------------------------------------------------------
-    # Main Summary Function
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # MAIN ENTRY POINT
+    # ---------------------------------------------------------------
     def summarize(
         self,
         user_question: str,
@@ -150,137 +101,120 @@ Here is a preview of the first row of data:
         query_results: List[Dict],
         intent: Optional[Dict] = None,
         execution_time: Optional[float] = None,
-        language: Optional[str] = None  # NEW: Optional language override
+        language: Optional[str] = None
     ) -> str:
-        """
-        Generate executive business summary with ORDER BY detection
-        
-        Args:
-            user_question: User's original question
-            sql_query: Executed SQL query
-            query_results: Query results
-            intent: Intent classification (includes query_type)
-            execution_time: Query execution time
-            language: Force language ('en' or 'tr'), auto-detect if None
-            
-        Returns:
-            Executive summary text
-        """
-        logger.info("📊 Generating executive business summary...")
+
+        logger.info("📊 Starting summary generation")
 
         if not query_results:
-            return "❌ Sonuç bulunamadı." if language == 'tr' else "❌ No results found."
+            return "❌ Sonuç bulunamadı." if language == "tr" else "❌ No results found."
 
-        # Auto-detect language if not specified
+        # Determine language
         if language is None:
-            language = self._detect_language(user_question)
-            logger.info(f"🌐 Auto-detected language: {language.upper()}")
+            language = self.prompt_manager.detect_language(user_question)
 
-        # Use PromptManager for Turkish summaries (with ORDER BY detection)
-        if language == 'tr':
-            return self._generate_turkish_summary(
-                user_question, sql_query, query_results, intent, execution_time
-            )
-        else:
-            return self._generate_english_summary(
+        logger.info(f"🌐 Summary language resolved as: {language.upper()}")
+
+        if language == "tr":
+            return self._summary_tr(
                 user_question, sql_query, query_results, intent, execution_time
             )
 
-    # ------------------------------------------------------------------
-    # Turkish Summary (uses PromptManager with ORDER BY detection)
-    # ------------------------------------------------------------------
-    def _generate_turkish_summary(
+        return self._summary_en(
+            user_question, sql_query, query_results, intent, execution_time
+        )
+
+    # ---------------------------------------------------------------
+    # TURKISH SUMMARY
+    # ---------------------------------------------------------------
+    def _summary_tr(
         self,
-        user_question: str,
-        sql_query: str,
-        query_results: List[Dict],
+        question: str,
+        sql: str,
+        results: List[Dict],
         intent: Optional[Dict],
-        execution_time: Optional[float]
+        exec_time: Optional[float]
     ) -> str:
-        """
-        Generate Turkish summary using PromptManager (includes ORDER BY detection)
-        """
-        logger.info("🇹🇷 Generating Turkish summary with ORDER BY detection...")
 
-        # Use PromptManager to build summary prompt (handles ORDER BY detection)
+        logger.info("🇹🇷 Generating Turkish summary...")
+
         prompt = self.prompt_manager.build_summary_prompt(
-            question=user_question,
-            sql=sql_query,
-            results=query_results,
+            question=question,
+            sql=sql,
+            results=results,
             intent=intent
         )
 
-        # Call Ollama
-        result = self.ollama.generate_summary(prompt)
+        summary = self.ollama.generate_summary(prompt)
 
-        # Validate
-        if not self._is_valid_summary(result):
-            logger.warning("⚠️ Ollama Turkish summary weak → trying OpenAI fallback...")
+        if not self._is_valid(summary):
+            logger.warning("⚠️ Ollama TR summary weak → trying OpenAI fallback...")
             if self.openai.enabled:
-                result = self.openai.generate(prompt)
+                summary = self.openai.generate(prompt)
 
-        # If both fail → fallback
-        if not self._is_valid_summary(result):
-            logger.error("❌ Turkish summary failed → Using fallback.")
-            return self._fallback_summary(query_results, language='tr')
+        if not self._is_valid(summary):
+            logger.error("❌ Turkish summary failed — fallback used")
+            return self._fallback(results, "tr")
 
-        # Add execution time footer
-        if execution_time:
-            result += f"\n\n⏱️ Sorgu süresi: {execution_time:.2f} saniye"
+        if exec_time:
+            summary += f"\n\n⏱️ Sorgu süresi: {exec_time:.2f} saniye"
 
-        return result.strip()
+        return summary.strip()
 
-    # ------------------------------------------------------------------
-    # English Summary (Legacy executive style)
-    # ------------------------------------------------------------------
-    def _generate_english_summary(
+    # ---------------------------------------------------------------
+    # ENGLISH SUMMARY (EXECUTIVE + ORDER-BY LOGIC)
+    # ---------------------------------------------------------------
+    def _summary_en(
         self,
-        user_question: str,
-        sql_query: str,
-        query_results: List[Dict],
+        question: str,
+        sql: str,
+        results: List[Dict],
         intent: Optional[Dict],
-        execution_time: Optional[float]
+        exec_time: Optional[float]
     ) -> str:
-        """
-        Generate English executive summary (legacy style)
-        """
+
         logger.info("🇬🇧 Generating English executive summary...")
 
-        # Create preview for the LLM
-        preview = json.dumps(query_results[:5], indent=2, ensure_ascii=False)
+        # Determine ranking direction
+        order_dir = self.prompt_manager._detect_order_direction(sql)
+        ranking_hint = ""
 
-        # Build final prompt
-        final_prompt = (
-            EXECUTIVE_SUMMARY_PROMPT_EN
-            + "\n\nUser Question:\n"
-            + user_question
+        if intent and intent.get("query_type") == "ranking":
+            if order_dir == "ASC":
+                ranking_hint = "\nNOTE: These results represent the LOWEST performers.\n"
+            elif order_dir == "DESC":
+                ranking_hint = "\nNOTE: These results represent the TOP performers.\n"
+
+        preview = json.dumps(results[:10], indent=2, ensure_ascii=False)
+
+        prompt = (
+            EXEC_SUMMARY_PROMPT_EN
+            + ranking_hint
+            + "\nUser Question:\n"
+            + question
             + "\n\nResult Preview:\n"
             + preview
             + "\n\nGenerate the executive summary now:"
         )
 
-        # Call Ollama
-        result = self.ollama.generate_summary(final_prompt)
+        summary = self.ollama.generate_summary(prompt)
 
-        # If needed → fallback to OpenAI
-        if not self._is_valid_summary(result):
-            logger.warning("⚠️ Ollama English summary weak → trying OpenAI fallback...")
+        if not self._is_valid(summary):
+            logger.warning("⚠️ Ollama EN summary weak → trying OpenAI fallback...")
             if self.openai.enabled:
-                result = self.openai.generate(final_prompt)
+                summary = self.openai.generate(prompt)
 
-        # If both fail → fallback summary
-        if not self._is_valid_summary(result):
-            logger.error("❌ English summary failed → Using fallback.")
-            return self._fallback_summary(query_results, language='en')
+        if not self._is_valid(summary):
+            logger.error("❌ English summary failed — fallback used")
+            return self._fallback(results, "en")
 
-        # Add execution time footer
-        if execution_time:
-            result += f"\n\n⏱️ Execution Time: {execution_time:.2f} seconds"
+        if exec_time:
+            summary += f"\n\n⏱️ Execution Time: {exec_time:.2f} seconds"
 
-        return result.strip()
+        return summary.strip()
 
 
-# Singleton accessor
+# Singleton
 _summarizer = None
 
 def get_result_summarizer():

@@ -1,74 +1,87 @@
-# app/utils/logger.py - IMPROVED VERSION
+# app/utils/logger.py
 """
-Logging Utilities with Config Support
+Unified Logging System (2025 Production Version)
+
+Features:
+- Safe LOG_LEVEL handling (no attribute errors)
+- Console + optional file logging
+- Rotating file logs (recommended for production)
+- No duplicate handlers
+- Does not leak logs to root logger
 """
 
 import logging
 import sys
 from pathlib import Path
+from logging.handlers import RotatingFileHandler
 from app.core.config import Config
 
 
 def get_logger(name: str) -> logging.Logger:
-    """
-    Returns a configured logger instance
-    
-    Args:
-        name: Logger name (usually __name__)
-        
-    Returns:
-        Configured logger instance
-    """
+    """Return a configured logger instance."""
+
     logger = logging.getLogger(name)
-    
-    # Avoid adding handlers multiple times
+
+    # Prevent duplicate handlers in reload cycles
     if logger.handlers:
         return logger
-    
-    # Set level from config
-    log_level = getattr(logging, Config.LOG_LEVEL.upper(), logging.INFO)
+
+    # ----------------------------------------------------
+    # SAFE LEVEL FETCH
+    # ----------------------------------------------------
+    level_name = getattr(Config, "LOG_LEVEL", "INFO")
+    if not isinstance(level_name, str):
+        level_name = "INFO"
+
+    log_level = getattr(logging, level_name.upper(), logging.INFO)
     logger.setLevel(log_level)
-    
-    # Formatter
+
+    # ----------------------------------------------------
+    # FORMATTER
+    # ----------------------------------------------------
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
     )
-    
-    # Console Handler (always)
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    
-    # File Handler (optional, for debugging)
-    if Config.LOG_LEVEL == "DEBUG":
+
+    # ----------------------------------------------------
+    # CONSOLE HANDLER (always on)
+    # ----------------------------------------------------
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(log_level)
+    console.setFormatter(formatter)
+    logger.addHandler(console)
+
+    # ----------------------------------------------------
+    # FILE HANDLER (recommended for prod, optional)
+    # Use rotating logs to prevent giant files.
+    # ----------------------------------------------------
+    if getattr(Config, "ENABLE_FILE_LOGS", False):
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
-        
-        file_handler = logging.FileHandler(
+
+        file_handler = RotatingFileHandler(
             log_dir / "harmony_ai.log",
-            encoding='utf-8'
+            maxBytes=5 * 1024 * 1024,   # 5 MB per file
+            backupCount=3,              # keep last 3 logs
+            encoding="utf-8"
         )
-        file_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(log_level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
-    
-    # Don't propagate to root logger
+
+    # ----------------------------------------------------
+    # Prevent propagation to root logger
+    # ----------------------------------------------------
     logger.propagate = False
-    
+
     return logger
 
 
 def set_log_level(level: str):
-    """
-    Dynamically change log level for all loggers
-    
-    Args:
-        level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-    """
+    """Dynamically change all logger levels at runtime."""
     log_level = getattr(logging, level.upper(), logging.INFO)
     logging.root.setLevel(log_level)
-    
+
     for handler in logging.root.handlers:
         handler.setLevel(log_level)
