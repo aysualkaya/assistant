@@ -1,13 +1,12 @@
-# app/llm/result_summarizer.py
 """
 Executive Business Summary Generator (2025, Final Production Edition)
 
 Enhancements:
-✔ TR/EN full auto-detection (via PromptManager public API)
-✔ ORDER BY ASC/DESC direction included in both languages
-✔ OpenAI fallback for both TR + EN
-✔ Strong validation
-✔ More informative fallback summaries
+✔ Uses PromptManager public detect_language()
+✔ ORDER BY ASC/DESC integrated for both TR + EN
+✔ OpenAI fallback for high-quality summaries
+✔ Cleaner prompts and consistent formatting
+✔ Safe fallback summaries
 """
 
 from typing import Dict, List, Optional
@@ -22,29 +21,29 @@ logger = get_logger(__name__)
 
 
 # -------------------------------------------------------------------
-# Executive BI Prompt (English)
+# English Executive Prompt
 # -------------------------------------------------------------------
 EXEC_SUMMARY_PROMPT_EN = """
-You are an AI Business Analyst generating a concise EXECUTIVE SUMMARY
-for senior business leaders.
+You are an AI Business Analyst generating an EXECUTIVE SUMMARY
+for senior decision-makers.
 
-Your writing MUST be:
+Your writing must be:
 - fully in English
-- based ONLY on the query results
 - business-oriented
-- max 150 words
-- insightful and actionable
+- based only on the provided data
+- concise (max 150 words)
+- actionable and insight-driven
 
 STRUCTURE:
 1. Key Insight  
 2. Business Interpretation  
 3. Strategic Impact  
-4. Recommended Actions
+4. Recommended Actions  
 
-Do NOT:
-- mention SQL or technical details
-- invent numbers
-- speculate beyond the results
+Avoid:
+- mentioning SQL or technical operations  
+- inventing numbers  
+- unjustified speculation  
 """
 
 
@@ -56,7 +55,7 @@ class ResultSummarizer:
         self.prompt_manager = PromptManager()
 
     # ---------------------------------------------------------------
-    # VALIDATION
+    # Validation
     # ---------------------------------------------------------------
     def _is_valid(self, text: Optional[str]) -> bool:
         if not text:
@@ -69,7 +68,7 @@ class ResultSummarizer:
         return True
 
     # ---------------------------------------------------------------
-    # FALLBACK SUMMARY (IMPROVED)
+    # Fallback
     # ---------------------------------------------------------------
     def _fallback(self, results: List[Dict], lang: str) -> str:
         sample = results[0] if results else {}
@@ -77,22 +76,22 @@ class ResultSummarizer:
         if lang == "tr":
             return f"""
 📊 İş Özeti (Yedek)
-Sistem detaylı bir özet üretemedi. 
-Aşağıda ilk veri satırı bulunmaktadır:
+Sistem detaylı bir özet üretemedi.
 
+İlk veri satırı:
 {json.dumps(sample, indent=2, ensure_ascii=False)}
 """.strip()
 
         return f"""
 📊 Executive Summary (Fallback)
-The system could not produce a full summary.
-Below is the first data row for reference:
+The system could not generate a detailed summary.
 
+First result row:
 {json.dumps(sample, indent=2, ensure_ascii=False)}
 """.strip()
 
     # ---------------------------------------------------------------
-    # MAIN ENTRY POINT
+    # MAIN ENTRY
     # ---------------------------------------------------------------
     def summarize(
         self,
@@ -109,10 +108,8 @@ Below is the first data row for reference:
         if not query_results:
             return "❌ Sonuç bulunamadı." if language == "tr" else "❌ No results found."
 
-        # Determine language
-        if language is None:
-            language = self.prompt_manager.detect_language(user_question)
-
+        # Language auto-detection
+        language = language or self.prompt_manager.detect_language(user_question)
         logger.info(f"🌐 Summary language resolved as: {language.upper()}")
 
         if language == "tr":
@@ -133,11 +130,12 @@ Below is the first data row for reference:
         sql: str,
         results: List[Dict],
         intent: Optional[Dict],
-        exec_time: Optional[float]
+        exec_time: Optional[float],
     ) -> str:
 
         logger.info("🇹🇷 Generating Turkish summary...")
 
+        # Build TR summary prompt via PromptManager
         prompt = self.prompt_manager.build_summary_prompt(
             question=question,
             sql=sql,
@@ -147,13 +145,14 @@ Below is the first data row for reference:
 
         summary = self.ollama.generate_summary(prompt)
 
+        # OpenAI fallback
         if not self._is_valid(summary):
-            logger.warning("⚠️ Ollama TR summary weak → trying OpenAI fallback...")
+            logger.warning("⚠️ Ollama TR summary weak → OpenAI fallback...")
             if self.openai.enabled:
                 summary = self.openai.generate(prompt)
 
         if not self._is_valid(summary):
-            logger.error("❌ Turkish summary failed — fallback used")
+            logger.error("❌ TR summary failed — fallback applied.")
             return self._fallback(results, "tr")
 
         if exec_time:
@@ -162,7 +161,7 @@ Below is the first data row for reference:
         return summary.strip()
 
     # ---------------------------------------------------------------
-    # ENGLISH SUMMARY (EXECUTIVE + ORDER-BY LOGIC)
+    # ENGLISH SUMMARY
     # ---------------------------------------------------------------
     def _summary_en(
         self,
@@ -170,42 +169,44 @@ Below is the first data row for reference:
         sql: str,
         results: List[Dict],
         intent: Optional[Dict],
-        exec_time: Optional[float]
+        exec_time: Optional[float],
     ) -> str:
 
         logger.info("🇬🇧 Generating English executive summary...")
 
-        # Determine ranking direction
-        order_dir = self.prompt_manager._detect_order_direction(sql)
+        # ORDER BY direction from PromptManager (public-safe)
+        direction = self.prompt_manager._detect_order_direction(sql)
         ranking_hint = ""
 
         if intent and intent.get("query_type") == "ranking":
-            if order_dir == "ASC":
+            if direction == "ASC":
                 ranking_hint = "\nNOTE: These results represent the LOWEST performers.\n"
-            elif order_dir == "DESC":
+            elif direction == "DESC":
                 ranking_hint = "\nNOTE: These results represent the TOP performers.\n"
 
         preview = json.dumps(results[:10], indent=2, ensure_ascii=False)
 
+        # EXECUTIVE PROMPT
         prompt = (
             EXEC_SUMMARY_PROMPT_EN
             + ranking_hint
             + "\nUser Question:\n"
             + question
-            + "\n\nResult Preview:\n"
+            + "\n\nData Preview:\n"
             + preview
-            + "\n\nGenerate the executive summary now:"
+            + "\n\nGenerate the summary now:"
         )
 
         summary = self.ollama.generate_summary(prompt)
 
+        # OpenAI fallback
         if not self._is_valid(summary):
-            logger.warning("⚠️ Ollama EN summary weak → trying OpenAI fallback...")
+            logger.warning("⚠️ Ollama EN summary weak → OpenAI fallback...")
             if self.openai.enabled:
                 summary = self.openai.generate(prompt)
 
         if not self._is_valid(summary):
-            logger.error("❌ English summary failed — fallback used")
+            logger.error("❌ EN summary failed — fallback applied.")
             return self._fallback(results, "en")
 
         if exec_time:

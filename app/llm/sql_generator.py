@@ -1,14 +1,7 @@
 # app/llm/sql_generator.py 
 """
 Dynamic SQL Generator — FINAL PRODUCTION VERSION (2025)
-
-Features:
-- Template engine (TR + EN question shortcuts)
-- Schema-aware LLM SQL generation (Ollama → OpenAI fallback)
-- LangChain SQL tools (list_tables, get_schema, check_sql)
-- Custom SQL validator
-- SQL normalizer with fuzzy-table correction
-- Self-correction with schema preservation
+With Unified TemplateRouter + Intent-first Pipeline
 """
 
 from typing import Dict, Optional, List, Any
@@ -19,21 +12,13 @@ from app.core.config import Config
 from app.llm.ollama_client import OllamaClient
 from app.llm.openai_client import OpenAIClient
 from app.llm.prompt_manager import PromptManager
+from app.llm.template_router import TemplateRouter
 from app.database.query_validator import QueryValidator
 from app.database.sql_normalizer import get_sql_normalizer
 from app.memory.query_logger import QueryLogger
 from app.utils.logger import get_logger
 
-# TEMPLATE ENGINE
-from app.llm.templates import (
-    template_top_products,
-    template_bottom_products,
-    template_total_sales,
-    template_monthly_trend,
-    template_store_vs_online,
-)
-
-# LangChain-based SQL tools
+# LangChain SQL tools
 from app.tools.sql_tools import (
     list_tables,
     get_schema,
@@ -59,49 +44,8 @@ class DynamicSQLGenerator:
         self.normalizer = get_sql_normalizer()
         self.query_logger = QueryLogger()
 
-    # =====================================================================
-    # FAST PATH TEMPLATE ENGINE
-    # =====================================================================
-    def _infer_limit(self, question: str, default: int = 5) -> int:
-        q = question.lower()
-        m = re.search(r"\b(\d+)\b", q)
-        if m:
-            return int(m.group(1))
-        return default
-
-    def _extract_year(self, q: str) -> Optional[int]:
-        m = re.search(r"(20\d{2})", q)
-        return int(m.group(1)) if m else None
-
-    def _template_shortcuts(self, question: str) -> Optional[str]:
-        """
-        Fast deterministic answers, covering both Turkish + English wording.
-        """
-        q = question.lower()
-
-        # TOP PRODUCTS
-        if any(k in q for k in ["en çok satan", "en cok satan", "top seller", "most sold", "top selling"]):
-            return template_top_products(limit=self._infer_limit(question))
-
-        # BOTTOM PRODUCTS
-        if any(k in q for k in ["en az satan", "least selling", "worst sellers", "lowest selling"]):
-            return template_bottom_products(limit=self._infer_limit(question))
-
-        # TOTAL SALES
-        if any(k in q for k in ["toplam satış", "toplam satis", "total sales"]):
-            return template_total_sales(self._extract_year(q))
-
-        # MONTHLY TREND
-        if any(k in q for k in ["aylık", "aylik", "monthly trend"]):
-            year = self._extract_year(q)
-            if year:
-                return template_monthly_trend(year)
-
-        # STORE vs ONLINE
-        if any(k in q for k in ["mağaza", "magaza", "store"]) and "online" in q:
-            return template_store_vs_online(self._extract_year(q))
-
-        return None
+        # 🔥 NEW — unified rule-based template router
+        self.template_router = TemplateRouter()
 
     # =====================================================================
     # MAIN SQL GENERATION PIPELINE
@@ -115,13 +59,9 @@ class DynamicSQLGenerator:
 
         logger.info(f"🔍 Generating SQL for: {question}")
 
-        # 1) TEMPLATE ENGINE
-        t = self._template_shortcuts(question)
-        if t:
-            logger.info("⚡ Using TEMPLATE ENGINE")
-            return t
-
-        # 2) INTENT
+        # --------------------------------------------
+        # 1) INTENT FIRST (IMPORTANT!)
+        # --------------------------------------------
         if user_context and "intent" in user_context:
             intent = user_context["intent"]
             logger.info("🎯 Using intent from user_context")
@@ -129,13 +69,40 @@ class DynamicSQLGenerator:
             intent = self.intent_classifier.classify(question)
             logger.info(f"🎯 Classified intent: {intent}")
 
+        # --------------------------------------------
+        # 2) TEMPLATE ROUTER
+        # --------------------------------------------
+        try:
+            template_sql = self.template_router.route(question, intent)
+        except Exception as e:
+            logger.error(f"TemplateRouter failed: {e}")
+            template_sql = None
+
+        if template_sql:
+            logger.info("⚡ Using TEMPLATE ENGINE (TemplateRouter)")
+            self.query_logger.log_query(
+                question=question,
+                sql=template_sql,
+                intent=intent,
+                strategy="template",
+                success=True,
+            )
+            return template_sql
+
+        # --------------------------------------------
+        # 3) STRATEGY SELECTION
+        # --------------------------------------------
         strategy = self._select_strategy(intent)
 
-        # 3) LangChain schema
+        # --------------------------------------------
+        # 4) LOAD LANGCHAIN SCHEMA
+        # --------------------------------------------
         logger.info("📘 Fetching LangChain schema...")
         tables_list, schema_info = self._load_langchain_schema()
 
-        # 4) Primary LLM Loop (Ollama → OpenAI fallback)
+        # --------------------------------------------
+        # 5) PRIMARY LLM LOOP (Ollama → OpenAI)
+        # --------------------------------------------
         last_sql = None
         last_errors = []
 
@@ -149,13 +116,12 @@ class DynamicSQLGenerator:
                 llm_mode="ollama",
                 examples=None,
                 error_context=None,
-                extra_schema=schema_info  # unified schema injection
+                extra_schema=schema_info
             )
 
-            # Try Ollama first
             raw = self.ollama.generate_sql(prompt)
             if not raw:
-                logger.warning("⚠️ Ollama empty response → try OpenAI")
+                logger.warning("⚠️ Ollama empty → trying OpenAI")
                 raw = self.openai.generate_sql(prompt)
 
             if not raw:
@@ -164,7 +130,6 @@ class DynamicSQLGenerator:
             sql = self._extract_sql(raw)
             sql = self.normalizer.normalize(sql)
 
-            # LangChain validation
             sql = self._apply_check_sql(sql)
 
             ok, errors = self.validator.validate(sql, intent)
@@ -180,9 +145,14 @@ class DynamicSQLGenerator:
 
             logger.warning(f"⚠️ SQL invalid: {errors}")
 
-        # 5) Self-correction stage
+        # --------------------------------------------
+        # 6) SELF-CORRECTION
+        # --------------------------------------------
         logger.warning("🔁 Entering self-correction...")
-        corrected = self._self_correct(question, last_sql, last_errors, intent, schema_info)
+
+        corrected = self._self_correct(
+            question, last_sql, last_errors, intent, schema_info
+        )
 
         if corrected:
             return corrected
@@ -194,11 +164,11 @@ class DynamicSQLGenerator:
     # =====================================================================
     def _load_langchain_schema(self):
         try:
-            tables_raw = list_tables()
-            if isinstance(tables_raw, str):
-                tables = [t.strip() for t in tables_raw.split(",") if t.strip()]
+            raw = list_tables()
+            if isinstance(raw, str):
+                tables = [t.strip() for t in raw.split(",") if t.strip()]
             else:
-                tables = list(tables_raw)
+                tables = list(raw)
 
             chunks = []
             for t in tables:
@@ -208,7 +178,6 @@ class DynamicSQLGenerator:
                     pass
 
             return tables, "\n".join(chunks)
-
         except Exception as e:
             logger.error(f"Schema load failed: {e}")
             return [], ""
@@ -230,7 +199,6 @@ class DynamicSQLGenerator:
                 return self.normalizer.normalize(res)
 
             return sql
-
         except Exception as e:
             logger.warning(f"check_sql failed: {e}")
             return sql
@@ -258,7 +226,6 @@ class DynamicSQLGenerator:
             + "\n".join(f"- {e}" for e in errors)
         )
 
-        # LLM selection
         client = self.openai if self.openai.enabled else self.ollama
         llm_mode = "openai" if self.openai.enabled else "ollama"
 
