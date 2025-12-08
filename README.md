@@ -1,177 +1,169 @@
-**LLM-Powered Intelligent Analytics Assistant** 
 
-Natural Language → SQL → Business Insight Engine for ContosoRetailDW
+# **Intelligent Analytics Assistant (LLM-Powered SQL Engine)**
 
-This project implements a production-grade analytics assistant that can understand business questions (in English or Turkish), generate accurate SQL queries, execute them on the Microsoft ContosoRetailDW data warehouse, and summarize results as business insights.
-The system is optimized for correctness, reliability, and explainability—powered by LLMs, LangChain SQL tools, and a robust validation framework.
+### **Natural Language → SQL → Insight Pipeline for ContosoRetailDW**
 
-1. Project Purpose
+This project implements a **production-grade intelligent analytics assistant** capable of understanding business questions (TR/EN), generating accurate SQL queries, validating them against the real ContosoRetailDW schema, executing them safely on SQL Server, and producing executive-level summaries or visualizations.
 
-The goal of this assistant is to automate the complete analytical workflow:
+The system combines **LLMs, rule-based templates, LangChain SQL tools, schema validation, and a self-correcting SQL pipeline** to maximize correctness, reliability, and business usability.
 
-Understand natural-language questions
+---
 
-Classify intent & detect required tables
+# **Project Purpose**
 
-Generate high-quality SQL
+The assistant automates the full analytical workflow:
 
-Validate & correct SQL before execution
+1. **Understand natural-language questions** (English or Turkish)
+2. **Classify intent** and detect required tables
+3. **Generate high-quality SQL**
+4. **Validate & normalize SQL before execution**
+5. **Execute SQL** safely using MSSQL (pyodbc)
+6. **Summarize results** as business insights (TR/EN)
+7. *(Optional)* **Visualize results via Streamlit**
 
-Execute the query on SQL Server
+Goal:
+✔️ No manual SQL writing
+✔️ No schema memorization
+✔️ No JOIN debugging
+✔️ Business-friendly analytics
 
-Summarize results in business language (TR/EN)
+---
 
-(Optional) Visualize insights in Streamlit
+# **Key Capabilities**
 
-This dramatically reduces friction between business users and complex data warehouse data models.
+## **1. Natural Language → SQL Generation (Hybrid Engine)**
 
- 2. Key Capabilities
-Natural Language → SQL Generation (Hybrid Engine)
+Supports both **English and Turkish** automatically using a layered architecture:
 
-Supports both Turkish and English automatically.
+### **a) Template Engine (Deterministic)**
 
-Uses a layered architecture:
+* Known analytics patterns → guaranteed-correct SQL
+* Zero hallucination
+* Best for common questions (top products, totals, trends)
 
-Template Engine → deterministic SQL for common questions
+### **b) Dynamic LLM SQL Generator**
 
-Dynamic LLM Generator → flexible reasoning
+* Flexible reasoning for unseen or complex questions
+* Schema-aware prompts
+* Correct MSSQL syntax
+* Automatically falls back to templates when needed
 
-LangChain SQL Tools → schema-aware generation
+### **c) SQL Normalizer + Correction Pipeline**
 
-Validator & Normalizer → safe SQL execution
+Handles:
 
-Self-Correction Module → fixes invalid SQL
+* Fuzzy table name correction
+* MSSQL keyword normalization
+* LIMIT → TOP conversion
+* Phantom column cleanup
 
-Intent Classification
+Ensures **clean, executable SQL**.
 
-Each query is analyzed to determine:
+---
 
-Aggregation, ranking, comparison, trend, geography, financial…
+## **2. Intent Classification**
 
-Complexity level
+Each question is analyzed for:
 
-Required tables
+* Aggregation
+* Ranking
+* Trend analysis
+* Comparison
+* Category/channel performance
+* Expected SQL shape
+* Complexity level
 
-Expected shape of the SQL output
+---
 
-LangChain SQL Integration (2025)
+## **3. LangChain SQL Integration (2025 Upgrade)**
 
-New — Production-grade enhancement
-
-LangChain is used only where it matters most:
-
-Table discovery
-tables = list_tables()
-
-Schema extraction (columns, types, FK structure)
-schema = get_schema("FactSales")
-
-SQL validation & correction
-checked = check_sql(sql)
-
-
-This gives the LLM real schema awareness, preventing:
-
-Wrong table names
-
-Wrong column names
-
-Bad JOINs
-
-Missing GROUP BY
-
-MSSQL syntax issues
-
-This dramatically increases SQL correctness and stability.
-
-SQL Validation Pipeline
-
-Each generated SQL query goes through:
-
-SQL Normalizer
-
-Table usage checker
-
-LangChain SQL checker
-
-Custom QueryValidator
-
-Self-correction cycle
-
-Safe execution wrapper
-
-This prevents almost all invalid SQL before reaching the database.
-
-Executive-Level Summaries (TR/EN)
-
-The assistant produces natural-language business insights:
-
-Trends
-
-Drivers of performance
-
-Comparative analysis
-
-Forecast-style interpretation
-
-Language is automatically matched to user input:
-
-Ask in English → Answer in English
-
-Ask in Turkish → Answer in Turkish
-
- Modern Streamlit UI
+LangChain is used as a **schema intelligence layer**, not an agent.
 
 Provides:
 
-Chat-like interface
+* `list_tables()` → table discovery
+* `get_schema(table)` → accurate column/types
+* `check_sql(query)` → SQL structure validation
 
-Generated SQL viewer
+Prevents:
 
-Data table results
+* Wrong table names
+* Incorrect JOIN keys
+* Missing GROUP BY
+* Invalid MSSQL syntax
 
-Optional charts
+This increased SQL correctness dramatically.
 
-Query history
+---
 
-3. System Architecture
-User Question (TR/EN)
-        ↓
+## **4. SQL Validation Pipeline**
+
+Each query passes through:
+
+1. **SQLNormalizer**
+2. **Table usage validator**
+3. **LangChain SQL checker**
+4. **Custom QueryValidator**
+5. **Self-correction loop**
+6. **Safe pyodbc execution wrapper**
+
+Result: almost no invalid SQL reaches the database.
+
+---
+
+## **5. Executive-Level Business Summaries (TR/EN)**
+
+Generates clear business insights:
+
+* Performance drivers
+* Trends
+* MoM / YoY analysis
+* Category breakdowns
+* Forecast-style commentary
+
+Output language auto-matches input.
+
+---
+
+## **6. Streamlit UI**
+
+Includes:
+
+* Chat-like interface
+* SQL viewer
+* Data table results
+* Optional charts
+* Query history
+
+---
+
+# **System Architecture**
+
+```
+User (TR/EN)
+    ↓
 Intent Classifier
-        ↓
-Template Engine (if applicable)
-        ↓
-LangChain schema loader (tables + columns)
-        ↓
+    ↓
+Template Engine (fast-path)
+    ↓
+LangChain Schema Loader
+    ↓
 LLM SQL Generator (Ollama → OpenAI fallback)
-        ↓
-SQL Normalizer + Validator + LangChain SQL Checker
-        ↓
-Safe Execution (pyodbc)
-        ↓
+    ↓
+SQL Normalizer + Validator + LC Checker
+    ↓
+Safe SQL Execution (MSSQL)
+    ↓
 Business Summary Generator (TR/EN)
-        ↓
-Streamlit Web UI
+    ↓
+Streamlit UI
+```
 
-4. LangChain Integration (NEW – 2025)
+---
 
-This project integrates LangChain minimally but effectively:
+# **Project Directory Structure (2025)**
 
-New Files Added
-File	Purpose
-app/database/langchain_db.py	Creates SQLDatabase object for MSSQL
-app/tools/sql_tools.py	list_tables(), get_schema(), check_sql()
-sql_generator.py (updated)	Uses schema in prompt + SQL correction
-LangChain is NOT used for:
-
-Agents
-Tool-chains
-ReAct loops
-Multi-step planners
-
-Instead, Harmony AI uses LangChain as a schema engine + SQL correctness engine, keeping the system fast and stable.
-
-5. Final Project Directory Structure (2025)
+```
 ├── app
 │   ├── core
 │   │   ├── config.py
@@ -186,93 +178,119 @@ Instead, Harmony AI uses LangChain as a schema engine + SQL correctness engine, 
 │   │   ├── db_client.py
 │   │   ├── sql_normalizer.py
 │   │   ├── query_validator.py
-│   │   ├── langchain_db.py       ← NEW
+│   │   ├── langchain_db.py
 │   ├── tools
-│   │   ├── sql_tools.py          ← NEW
+│   │   ├── sql_tools.py
 │   ├── memory
 │   │   ├── query_logger.py
-│   │   └── (PatternMiner removed)
 │   ├── utils
 │       ├── logger.py
-│
 ├── tests
 │   ├── run_test_scenarios.py
 │   ├── test_scenarios.json
-│   ├── sql_table_validator.py    ← NEW (2025)
-│
+├── sql_table_validator.py
 ├── poc_interactive.py
 ├── poc_streamlit.py
-├── README.md
 ├── requirements.txt
+└── README.md
+```
 
-6. Installation & Setup
- 1- Install dependencies
+---
+
+# **Installation & Setup**
+
+## **1. Install dependencies**
+
+```
 pip install -r requirements.txt
+```
 
- 2️- Pull Ollama models
+## **2. Pull Ollama models**
+
+```
 ollama pull llama3.1:8b
 ollama pull llama3.2:latest
+```
 
- 3️- Configure Database
+## **3. Configure database**
 
-Edit app/core/config.py or .env:
+In `.env` or `config.py`:
 
+```
 DB_SERVER=localhost
 DB_NAME=ContosoRetailDW
-DB_DRIVER="ODBC Driver 18 for SQL Server"
+DB_DRIVER=ODBC Driver 18 for SQL Server
+```
 
- 4️- Run the Streamlit UI
+## **4. Run Streamlit UI**
+
+```
 streamlit run poc_streamlit.py
+```
 
- 5️- Run Interactive Terminal Mode
+## **5. Run interactive terminal**
+
+```
 python poc_interactive.py
+```
 
-7. Automated Test Suite
+---
+
+# **Automated Test Suite**
 
 Run:
 
+```
 python tests/run_test_scenarios.py
+```
 
+Tests:
 
-Each scenario validates:
+* Intent detection
+* SQL correctness
+* Table usage (via LangChain schema)
+* JOIN structure
+* Execution safety
+* Summary quality
 
-Correct intent
+Example scenario:
 
-Correct SQL
-
-Correct table usage (via LangChain schema)
-
-No execution errors
-
-Logical structure
-
-Quality of summaries
-
-Example test case:
-
+```
 {
   "id": 1,
   "name": "Simple Aggregation",
   "question": "2008 yılında toplam satış nedir?",
   "expected_tables": ["FactSales", "DimDate"]
 }
+```
 
-8. Example Supported Questions (TR & EN)
-Example Question	Category
-“2008 yılında toplam satış nedir?”	Aggregation
-“What are the top 5 products?”	Ranking
-“2007 mağaza vs online satış karşılaştırması”	Comparison
-“Show the monthly trend for 2009”	Trend
-“En az satan ürün hangisi?”	Ranking
-“Which category performs best online?”	Category Analysis
-9. Future Enhancements
-Feature	Status
-Advanced analytics dashboards	Planned
-GPT-4o Mini fallback routing	In progress
-Multi-step SQL Planning Agent	Planned
-Contoso-specific fine-tuned model	Research phase
-Multi-language conversational UI	Planned
-10. License
+---
 
-This project is intended for research, education, and prototyping.
-Not recommended for production without further security, monitoring, and scalability enhancements.
+# **Example Supported Questions**
+
+* **“2008 yılında toplam satış nedir?”** → Aggregation
+* **“What are the top 5 products?”** → Ranking
+* **“2007 mağaza vs online satış karşılaştırması”** → Comparison
+* **“Show monthly trend for 2009”** → Trend
+* **“En az satan ürün hangisi?”** → Ranking
+* **“Which category performs best online?”** → Category analysis
+
+---
+
+# **Future Enhancements**
+
+| Feature                           | Status      |
+| --------------------------------- | ----------- |
+| Advanced analytics dashboards     | Planned     |
+| GPT-4o Mini fallback routing      | In progress |
+| Multi-step SQL planning agent     | Planned     |
+| Contoso-specific fine-tuned model | Research    |
+| Multi-language conversational UI  | Planned     |
+
+---
+
+# **License**
+
+This project is intended for **research, education, and prototyping**.
+Production deployment requires additional security, monitoring, and scalability enhancements.
+
