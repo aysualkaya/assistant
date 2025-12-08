@@ -1,4 +1,5 @@
-LLM-Powered Intelligent Analytics Assistant 
+#LLM-Powered Intelligent Analytics Assistant 
+
 Natural Language → SQL → Business Insight Engine for ContosoRetailDW
 
 This project implements a production-grade analytics assistant that can understand business questions (in English or Turkish), generate accurate SQL queries, execute them on the Microsoft ContosoRetailDW data warehouse, and summarize results as business insights.
