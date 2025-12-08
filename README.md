@@ -1,4 +1,4 @@
-#LLM-Powered Intelligent Analytics Assistant 
+**LLM-Powered Intelligent Analytics Assistant** 
 
 Natural Language → SQL → Business Insight Engine for ContosoRetailDW
 
