@@ -19,7 +19,7 @@ The assistant automates the full analytical workflow:
 4. **Validate & normalize SQL before execution**
 5. **Execute SQL** safely using MSSQL (pyodbc)
 6. **Summarize results** as business insights (TR/EN)
-7. *(Optional)* **Visualize results via Streamlit**
+7. **Visualize results via Streamlit**
 
 Goal:
 ✔️ No manual SQL writing
@@ -75,7 +75,7 @@ Each question is analyzed for:
 
 ---
 
-## **3. LangChain SQL Integration (2025 Upgrade)**
+## **3. LangChain SQL Integration **
 
 LangChain is used as a **schema intelligence layer**, not an agent.
 
