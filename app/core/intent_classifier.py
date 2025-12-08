@@ -1,3 +1,4 @@
+# app/core/intent_classifier.py
 """
 Advanced Intent Classifier (2025 – Multilingual, Production Edition)
 -------------------------------------------------------------------
@@ -14,9 +15,10 @@ Understands:
 - profitability / return rate detection
 - time detection (year, month, week)
 - Extracts complexity score
+- 🔥 NEW: expected_count for ranking queries
 """
 
-from typing import Dict
+from typing import Dict, Optional
 import re
 from app.utils.logger import get_logger
 
@@ -24,7 +26,6 @@ logger = get_logger(__name__)
 
 
 class IntentClassifier:
-
     # ======================================================================
     # PUBLIC
     # ======================================================================
@@ -32,24 +33,44 @@ class IntentClassifier:
         q = question.lower().strip()
 
         # ------------------------------------------------------------
-        # 1) RANKING (TOP / BOTTOM)
+        # 1) RANKING (TOP / BOTTOM) - 🔥 EXPECTED_COUNT ADDED
         # ------------------------------------------------------------
         if self._contains(q, [
             "en çok", "en cok", "top", "best", "highest",
             "most selling", "top seller", "top selling",
             "best performing"
         ]):
-            return self._intent("ranking", 5, order="desc")
+            # Kullanıcı sayı belirtmiş mi kontrol et
+            explicit_count = self._extract_explicit_count(q)
+            return self._intent(
+                query_type="ranking",
+                complexity=5,
+                order="desc",
+                expected_count=explicit_count or 5  # "en çok" için default 5
+            )
 
         if self._contains(q, [
             "en az", "least", "bottom", "worst", "lowest",
             "least selling", "worst performing"
         ]):
-            return self._intent("ranking", 5, order="asc")
+            # 🔥 "en az" için expected_count = 1 (tek ürün)
+            explicit_count = self._extract_explicit_count(q)
+            return self._intent(
+                query_type="ranking",
+                complexity=5,
+                order="asc",
+                expected_count=explicit_count or 1  # "en az" → 1 ürün
+            )
 
         # Detect: "top 5", "top 10 products"
         if re.search(r"\btop\s+\d+\b", q):
-            return self._intent("ranking", 5, order="desc")
+            explicit_count = self._extract_explicit_count(q)
+            return self._intent(
+                query_type="ranking",
+                complexity=5,
+                order="desc",
+                expected_count=explicit_count or 5
+            )
 
         # ------------------------------------------------------------
         # 2) CATEGORY-BASED
@@ -86,7 +107,7 @@ class IntentClassifier:
         # ------------------------------------------------------------
         # 5) ONLINE CHANNEL detection
         # ------------------------------------------------------------
-        if self._contains(q, ["online satış", "online satic", "online", "e-commerce"]):
+        if self._contains(q, ["online satış", "online satis", "online", "e-commerce"]):
             return self._intent(
                 query_type="online_channel",
                 complexity=6,
@@ -160,6 +181,35 @@ class IntentClassifier:
     def _contains(self, q: str, words: list) -> bool:
         return any(w in q for w in words)
 
+    # 🔥 NEW: Extract explicit count from question
+    def _extract_explicit_count(self, q: str) -> Optional[int]:
+        """
+        Kullanıcı sorusundan açık sayı çıkar.
+        Örnekler:
+        - "en çok satan 5 ürün" → 5
+        - "top 10 products" → 10
+        - "en az satan 3 kategori" → 3
+        - "en az satan ürün" → None
+        """
+        patterns = [
+            r"(?:top|en çok|en cok|en az)\s+(\d+)",
+            r"(\d+)\s+(?:ürün|urun|product|kategori|category|store|mağaza|magaza)",
+            r"ilk\s+(\d+)",
+            r"first\s+(\d+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, q)
+            if match:
+                try:
+                    count = int(match.group(1))
+                    if 1 <= count <= 100:
+                        return count
+                except (ValueError, IndexError):
+                    continue
+
+        return None
+
     # ======================================================================
     # INTENT BUILDER
     # ======================================================================
@@ -170,18 +220,24 @@ class IntentClassifier:
         order: str = "none",
         time_dimension: bool = False,
         granularity: str = "none",
-        comparison_type: str = "none"
+        comparison_type: str = "none",
+        expected_count: Optional[int] = None
     ) -> Dict:
 
-        return {
+        intent: Dict = {
             "query_type": query_type,
             "complexity": complexity,
             "order_direction": order,
             "time_dimension": time_dimension,
             "time_granularity": granularity,
             "comparison_type": comparison_type,
-            "confidence": 0.95
+            "confidence": 0.95,
         }
+
+        if expected_count is not None:
+            intent["expected_count"] = expected_count
+
+        return intent
 
     # ======================================================================
     # TIME DETECTORS

@@ -19,10 +19,6 @@ Kapsam:
 
 
 def _escape_literal(value: str) -> str:
-    """
-    SQL string literal güvenliği için tek tırnakları escape eder.
-    Örn: O'Reilly -> O''Reilly
-    """
     if value is None:
         return ""
     return str(value).replace("'", "''")
@@ -34,10 +30,6 @@ def _escape_literal(value: str) -> str:
 
 
 def template_total_sales(year: int | None = None):
-    """
-    Toplam satış tutarı.
-    Örn: 2008 yılında toplam satış nedir?
-    """
     sql = """
 SELECT
     SUM(fs.SalesAmount) AS TotalSales
@@ -49,10 +41,10 @@ JOIN DimDate dd ON fs.DateKey = dd.DateKey
     return sql.strip()
 
 
-def template_top_products(limit: int = 5, year: int | None = None):
+def template_top_products(limit: int, year: int | None = None):
     """
     En çok satan ürünler (tutar bazlı).
-    Örn: En çok satan 5 ürün hangisi? / What are the top 5 products?
+    Limit dışarıdan gelir (IntentClassifier).
     """
     sql = f"""
 SELECT TOP {limit}
@@ -71,13 +63,10 @@ ORDER BY TotalSales DESC
     return sql.strip()
 
 
-def template_bottom_products(limit: int = 3, year: int | None = None):
+def template_bottom_products(limit: int, year: int | None = None):
     """
     En az satan ürünler (tutar bazlı).
-    Örn: En az satan 3 ürün hangisi? / What is the least sold product?
-    
-    ✅ FIXED: ProductName döndürülüyor (ProductKey değil)
-    ✅ FIXED: Tüm JOIN'larda alias kullanılıyor
+    Limit dışarıdan gelir (IntentClassifier).
     """
     sql = f"""
 SELECT TOP {limit}
@@ -96,12 +85,10 @@ ORDER BY TotalSales ASC
     return sql.strip()
 
 
-def template_bottom_products_by_quantity(limit: int = 3, year: int | None = None):
+def template_bottom_products_by_quantity(limit: int, year: int | None = None):
     """
     En az satan ürünler (ADET bazlı).
-    Örn: En az ADET satan ürün hangisi?
-    
-    ✅ NEW: Quantity-based ranking (tutar yerine adet)
+    Limit dışarıdan gelir (IntentClassifier).
     """
     sql = f"""
 SELECT TOP {limit}
@@ -122,10 +109,6 @@ ORDER BY TotalQuantity ASC
 
 
 def template_monthly_trend(year: int):
-    """
-    Aylık satış trendi.
-    Örn: 2009 yılı aylık satış trendi.
-    """
     return f"""
 SELECT
     dd.CalendarMonth AS MonthNumber,
@@ -140,12 +123,6 @@ ORDER BY dd.CalendarMonth
 
 
 def template_quarterly_trend(year: int):
-    """
-    Çeyreklik satış trendi.
-    Örn: 2008 çeyreklik satış trendi / 2008 quarterly trend
-    
-    ✅ NEW: Quarterly analysis
-    """
     return f"""
 SELECT
     dd.CalendarQuarter AS Quarter,
@@ -160,13 +137,6 @@ ORDER BY dd.CalendarQuarter
 
 
 def template_daily_trend(year: int | None = None, month: int | None = None):
-    """
-    Günlük satış trendi.
-    Örn: 2008 yılında günlük satışlar; veya 2008 Mart ayı günlük satışlar.
-    DimDate.FullDateLabel üzerinden gruplanır.
-    
-    ✅ FIXED: Alias kullanımı eklendi
-    """
     sql = """
 SELECT
     dd.FullDateLabel AS [Date],
@@ -191,10 +161,6 @@ ORDER BY dd.FullDateLabel
 
 
 def template_weekly_trend(year: int):
-    """
-    Haftalık satış trendi (CalendarWeek bazlı).
-    Örn: 2008 yılı haftalık satış trendi.
-    """
     return f"""
 SELECT
     dd.CalendarWeek AS WeekNumber,
@@ -208,12 +174,6 @@ ORDER BY dd.CalendarWeek
 
 
 def template_store_vs_online(year: int):
-    """
-    Mağaza vs Online satış karşılaştırması.
-    Örn: 2007'de mağaza vs online satış karşılaştırması.
-    
-    ✅ FIXED: Alias kullanımı kontrol edildi
-    """
     return f"""
 SELECT 'Store' AS Channel, SUM(fs.SalesAmount) AS TotalSales
 FROM FactSales fs
@@ -230,10 +190,6 @@ WHERE dd.CalendarYear = {year}
 
 
 def template_yearly_comparison(year1: int, year2: int):
-    """
-    İki yılın toplam satış karşılaştırması.
-    Örn: 2007 ve 2008 yıl karşılaştırması.
-    """
     return f"""
 SELECT
     dd.CalendarYear AS [Year],
@@ -252,10 +208,6 @@ ORDER BY dd.CalendarYear
 
 
 def template_category_sales(year: int | None = None):
-    """
-    Kategori bazında satış analizi.
-    Örn: Kategori bazında satış analizi.
-    """
     sql = """
 SELECT
     dpc.ProductCategoryName,
@@ -276,9 +228,6 @@ ORDER BY TotalSales DESC
 
 
 def template_subcategory_sales(year: int | None = None):
-    """
-    Alt kategori (ProductSubcategory) bazlı satış analizi.
-    """
     sql = """
 SELECT
     dps.ProductSubcategoryName,
@@ -300,10 +249,6 @@ ORDER BY TotalSales DESC
 
 
 def template_category_monthly_heatmap(year: int | None = None):
-    """
-    Kategori × Ay bazında satış matrisi (heatmap için).
-    Örn: 2008 yılında, kategori bazında aylık satışlar.
-    """
     sql = """
 SELECT
     dpc.ProductCategoryName,
@@ -325,10 +270,6 @@ ORDER BY dpc.ProductCategoryName, dd.CalendarMonthLabel
 
 
 def template_top_product_each_category():
-    """
-    Her kategoride en çok satan ürünü getirir.
-    Örn: Her kategoride en çok satan ürün hangisi?
-    """
     return """
 WITH CategorySales AS (
     SELECT
@@ -357,13 +298,9 @@ ORDER BY ProductCategoryName
 
 def template_top_products_in_category(
     category_name: str,
-    limit: int = 5,
+    limit: int,
     year: int | None = None,
 ):
-    """
-    Belirli bir kategoride en çok satan ürünler.
-    Örn: Laptop kategorisinde en çok satan 5 ürün hangisi?
-    """
     cat = _escape_literal(category_name)
     sql = f"""
 SELECT TOP {limit}
@@ -387,10 +324,6 @@ ORDER BY TotalSales DESC
 
 
 def template_top_product_details():
-    """
-    En çok satan ürünün detaylı bilgileri.
-    Örn: En çok satan ürünün detaylı bilgileri.
-    """
     return """
 WITH Ranked AS (
     SELECT
@@ -415,11 +348,7 @@ WHERE r.rn = 1
 """.strip()
 
 
-def template_best_stores(limit: int = 5, year: int | None = None):
-    """
-    En iyi performans gösteren mağazalar.
-    Örn: En iyi performans gösteren 5 mağaza.
-    """
+def template_best_stores(limit: int, year: int | None = None):
     sql = f"""
 SELECT TOP {limit}
     st.StoreName,
@@ -437,13 +366,7 @@ ORDER BY TotalSales DESC
     return sql.strip()
 
 
-def template_worst_stores(limit: int = 3, year: int | None = None):
-    """
-    En kötü performans gösteren mağazalar.
-    Örn: En kötü 3 mağaza hangisi?
-    
-    ✅ NEW: Worst performing stores
-    """
+def template_worst_stores(limit: int, year: int | None = None):
     sql = f"""
 SELECT TOP {limit}
     st.StoreName,
@@ -467,10 +390,6 @@ ORDER BY TotalSales ASC
 
 
 def template_region_sales(year: int | None = None):
-    """
-    Bölge bazında satış performansı (ülke/bölge seviyesinde).
-    Örn: Bölge bazında satış performansı.
-    """
     sql = """
 SELECT
     geo.RegionCountryName,
@@ -490,9 +409,6 @@ ORDER BY TotalSales DESC
 
 
 def template_region_store_vs_online(year: int):
-    """
-    Bölge bazında mağaza vs online satış karşılaştırması.
-    """
     return f"""
 SELECT
     geo.RegionCountryName,
@@ -521,10 +437,6 @@ GROUP BY geo.RegionCountryName
 
 
 def template_customer_segment_revenue(year: int | None = None):
-    """
-    Müşteri segmenti bazında gelir (örnek segment: Education).
-    Örn: Eğitim seviyesine göre toplam online satış.
-    """
     sql = """
 SELECT
     dc.Education,
@@ -543,9 +455,6 @@ ORDER BY TotalSales DESC
 
 
 def template_avg_revenue_per_customer(year: int | None = None):
-    """
-    Müşteri başına ortalama gelir (online kanal).
-    """
     sql = """
 SELECT
     COUNT(DISTINCT fos.CustomerKey) AS CustomerCount,
@@ -568,10 +477,6 @@ JOIN DimDate dd ON fos.DateKey = dd.DateKey
 
 
 def template_profit_margin_by_product(year: int | None = None):
-    """
-    Ürün bazında yaklaşık kâr analizi.
-    Kâr ≈ (UnitPrice - UnitCost) * SalesQuantity - DiscountAmount - ReturnAmount
-    """
     sql = """
 SELECT
     dp.ProductName,
@@ -593,9 +498,6 @@ ORDER BY ApproxProfit DESC
 
 
 def template_return_rate_by_category(year: int | None = None):
-    """
-    Kategori bazında iade oranı (ReturnQuantity / SalesQuantity).
-    """
     sql = """
 SELECT
     dpc.ProductCategoryName,
@@ -621,9 +523,6 @@ ORDER BY ReturnRate DESC
 
 
 def template_yoy_growth(start_year: int, end_year: int):
-    """
-    Yıllık satış ve yıl bazında büyüme oranı (YoY Growth %).
-    """
     return f"""
 WITH Yearly AS (
     SELECT
@@ -651,10 +550,6 @@ ORDER BY y.[Year]
 
 
 def template_last_n_days_sales(days: int = 30):
-    """
-    Son N gündeki satış performansı.
-    DimDate içindeki en güncel tarihe göre geri gider.
-    """
     return f"""
 SELECT
     dd.FullDateLabel AS [Date],
@@ -671,10 +566,6 @@ ORDER BY dd.FullDateLabel
 
 
 def template_abc_analysis():
-    """
-    ABC analizi: ürünleri ciroya göre sıralayıp kümülatif yüzde hesaplar.
-    A: ilk ~%80, B: sonraki ~%15, C: son ~%5 (yorumlama istemci tarafında yapılabilir).
-    """
     return """
 WITH ProductRevenue AS (
     SELECT
@@ -711,11 +602,7 @@ ORDER BY TotalSales DESC
 # ================================================================
 
 
-def template_top_online_products(limit: int = 5, year: int | None = None):
-    """
-    ONLINE kanalında en çok satan ürünler.
-    Örn: Online'da en çok satan 5 ürün hangisi?
-    """
+def template_top_online_products(limit: int, year: int | None = None):
     sql = f"""
 SELECT TOP {limit}
     dp.ProductName,
@@ -733,13 +620,7 @@ ORDER BY TotalSales DESC
     return sql.strip()
 
 
-def template_bottom_online_products(limit: int = 3, year: int | None = None):
-    """
-    ONLINE kanalında en az satan ürünler.
-    Örn: Online'da en az satan 3 ürün hangisi?
-    
-    ✅ NEW: Online least sold products
-    """
+def template_bottom_online_products(limit: int, year: int | None = None):
     sql = f"""
 SELECT TOP {limit}
     dp.ProductName,
@@ -758,9 +639,6 @@ ORDER BY TotalSales ASC
 
 
 def template_online_category_sales(year: int | None = None):
-    """
-    ONLINE kanalında kategori bazında satış analizi.
-    """
     sql = """
 SELECT
     dpc.ProductCategoryName,
@@ -780,10 +658,11 @@ ORDER BY TotalSales DESC
     return sql.strip()
 
 
-def template_top_online_products_in_category(category_name: str, limit: int = 5, year: int | None = None):
-    """
-    ONLINE kanalında belirli bir kategoride en çok satan ürünler.
-    """
+def template_top_online_products_in_category(
+    category_name: str,
+    limit: int,
+    year: int | None = None,
+):
     cat = _escape_literal(category_name)
     sql = f"""
 SELECT TOP {limit}
@@ -807,9 +686,6 @@ ORDER BY TotalSales DESC
 
 
 def template_online_monthly_trend(year: int):
-    """
-    ONLINE kanalında aylık satış trendi.
-    """
     return f"""
 SELECT
     dd.CalendarMonth AS MonthNumber,
@@ -824,47 +700,32 @@ ORDER BY dd.CalendarMonth
 
 
 # ================================================================
-# 6) TEMPLATE MAP (Template Seçici için)
+# 6) TEMPLATE MAP
 # ================================================================
 
 TEMPLATE_MAP = {
-    # Basic aggregation
     "total_sales": template_total_sales,
     "top_products": template_top_products,
     "bottom_products": template_bottom_products,
     "bottom_products_quantity": template_bottom_products_by_quantity,
-    
-    # Trends
     "monthly_trend": template_monthly_trend,
     "quarterly_trend": template_quarterly_trend,
     "weekly_trend": template_weekly_trend,
     "daily_trend": template_daily_trend,
-    
-    # Comparisons
     "store_vs_online": template_store_vs_online,
     "yearly_comparison": template_yearly_comparison,
-    
-    # Categories
     "category_sales": template_category_sales,
     "subcategory_sales": template_subcategory_sales,
     "top_product_each_category": template_top_product_each_category,
     "top_products_in_category": template_top_products_in_category,
-    
-    # Stores
     "best_stores": template_best_stores,
     "worst_stores": template_worst_stores,
-    
-    # Geography
     "region_sales": template_region_sales,
     "region_store_vs_online": template_region_store_vs_online,
-    
-    # Online channel
     "top_online_products": template_top_online_products,
     "bottom_online_products": template_bottom_online_products,
     "online_category_sales": template_online_category_sales,
     "online_monthly_trend": template_online_monthly_trend,
-    
-    # Financial
     "profit_margin": template_profit_margin_by_product,
     "return_rate": template_return_rate_by_category,
     "yoy_growth": template_yoy_growth,
